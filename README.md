@@ -1,6 +1,6 @@
-# Verifacti Integration Module for Perfex CRM
+# Integración de Verifactu para Perfex CRM a través de la API de Verifacti
 
-Integración avanzada con la API de Verifacti (facturación electrónica española) para Perfex CRM.
+Integración básica de Verifactu para Perfex CRM utilizando la API de Verifacti, para cumplir con los requisitos de la Ley Antifraude a partir de enero de 2026. Este módulo, que hemos desarrollado con la ayuda de un programador externo (y muchas horas de búsquedas, arreglos y ayuda de Copilot) nos permite iniciar el camino para cumplir con Verifactu, si bien aún hay que utilizarlo con precaución y necesita muchas mejoras para terminar de funcionar.
 
 ## Características principales
 - Envío controlado (no automático) de facturas al marcar como enviadas o al enviarlas por email (con forzado para borradores en "Guardar & Enviar" para obtener QR antes del PDF).
@@ -95,4 +95,4 @@ Ver `SECURITY.md`.
 Distribuido bajo licencia MIT (ver `LICENSE`).
 
 ---
-© 2025 Media Sector y contribuidores. Este módulo no es oficial de Perfex CRM ni de Verifacti.
+© 2025 Media Sector, Asif Thebepotra y contribuidores. Este módulo no es oficial de Perfex CRM ni de Verifacti.
