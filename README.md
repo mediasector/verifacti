@@ -38,6 +38,20 @@ Está pensado únicamente para uso interno de los sistemas de Media Sector S.L. 
    define('VERIFACTI_QR_WAIT_SECONDS', 18);        // Tiempo máximo de espera para QR
    ```
 
+## Configuración de códigos de exención
+
+En el menú de Perfex CRM, ve a 'Configuración > Presupuestos > Impuestos' y haz clic en 'Nuevo impuesto'. A la hora de nombrar los impuestos, debes utilizar el tipo de exención entre paréntesis, corchetes o después de un espacio, siendo libre el nombre que le quieras poner.
+
+Detecta los tokens `E*` en el nombre del impuesto 0%.
+
+Nombres sugeridos:
+
+- `IVA 0% exento E2|0.00`
+- `Exportación (E5)|0.00`
+- `IVA 0% [E3]|0.00`
+
+Si no se encuentra token se asigna `E1` por defecto.
+
 ## Flujo de Envío
 1. El usuario marca la factura como enviada o pulsa "Enviar por Email".
 2. Si está en borrador y es un envío inmediato (no programado), se fuerza el registro para obtener el QR antes de generar el PDF.
@@ -67,13 +81,6 @@ Campos clave: `invoice_id`, `credit_note_id`, `verifacti_id`, `status`, `qr_url`
 - PDF Injection: `invoice_pdf_after_invoice_header_number` y variedad de `credit_note_pdf_after_*`.
 - Validaciones: `pre_controller` (bloqueo >3000 sin NIF, bloqueo merge).
 - Cron: `after_cron_run` (procesos pendientes).
-
-## Códigos de Exención
-Detecta tokens `E*` en el nombre del impuesto 0%. Ejemplos aceptados:
-- `IVA 0% EXENTO E2|0.00`
-- `Servicio Exportación (E5)|0.00`
-- `IVA 0% [E3]|0.00`
-Si no se encuentra token se asigna `E1` por defecto.
 
 ## Cancelación
 `cancelInvoice($invoice_id, $reason)` realiza llamada a la API y actualiza estado local (`canceled_at`). Mantiene respuesta completa para auditoría.
