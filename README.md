@@ -1,6 +1,12 @@
 # Integración de Verifactu para Perfex CRM a través de la API de Verifacti
 
-Integración básica de Verifactu para Perfex CRM utilizando la API de Verifacti, para cumplir con los requisitos de la Ley Antifraude a partir de enero de 2026. Este módulo, que hemos desarrollado con la ayuda de un programador externo (y muchas horas de búsquedas, arreglos y ayuda de Copilot) nos permite iniciar el camino para cumplir con Verifactu, si bien aún hay que utilizarlo con precaución y necesita muchas mejoras para terminar de funcionar.
+Módulo para la integración básica de Verifactu en Perfex CRM utilizando la API de Verifacti, ideado para cumplir con los requisitos de la Ley Antifraude a partir de enero de 2026. Este módulo, que hemos desarrollado con la ayuda de un programador externo (y muchas horas de búsquedas, arreglos y ayuda de Copilot) nos permite iniciar el camino para cumplir con Verifactu, si bien aún hay que utilizarlo con precaución y necesita muchas mejoras para terminar de funcionar.
+
+Actualmente sólo soporta los tipos impositivos aplicables en Península, Baleares, Ceuta y Melilla. Falta por integrar IGIC.
+
+El módulo, además, realiza ciertos cambios de funcionamiento en la interfaz de Perfex CRM para cumplir con la legislación: elimina la función de fusionar facturas.
+
+Está pensado únicamente para uso interno de los sistemas de Media Sector S.L. y se libera por si alguien quiere construir un módulo más decente, con menos errores. Se debe usar bajo la propia responsabilidad.
 
 ## Características principales
 - Envío controlado (no automático) de facturas al marcar como enviadas o al enviarlas por email (con forzado para borradores en "Guardar & Enviar" para obtener QR antes del PDF).
@@ -84,6 +90,8 @@ Ver `CHANGELOG.md`.
 - UI para reintento manual de obtención de QR.
 - Configuración de tipo_rectificativa variable (I/S, etc.).
 - Validación explícita de máximo 12 líneas agregadas (normativa TicketBAI en algunas jurisdicciones / escenarios SII).
+- Eliminar las opciones de borrado de facturas en la interfaz.
+- Añadir opciones de IGIC.
 
 ## Desarrollo / Contribución
 Ver `CONTRIBUTING.md`.
