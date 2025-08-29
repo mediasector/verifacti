@@ -1,0 +1,35 @@
+# Dependencias / entorno
+/vendor/
+composer.lock
+node_modules/
+
+# Archivos del runtime Perfex
+/application/logs/*
+!application/logs/index.html
+
+# Credenciales locales
+.env
+.env.local
+*.key
+*.pem
+
+# Sistemas operativos
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Backups temporales
+*.bak
+*.tmp
+~$*
+
+# Cache
+cache/
+*.cache
+
+# Otros
+*.zip
