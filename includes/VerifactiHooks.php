@@ -522,12 +522,21 @@ class VerifactiHooks
             if(function_exists('log_message')){ log_message('debug','[Verifacti] Clasificada como F2 (sin NIF destinatario, total='.$invoice->total.') ID='.$invoice_id); }
         }
         // fecha_expedicion debe reflejar la fecha fiscal de la factura (Invoice->date) y no la fecha de creación del registro (datecreated)
+        // Descripción: usar concepto del primer ítem si existe, en fallback el número formateado
+        $first_item_desc = null;
+        if(isset($invoice_items[0])){
+            $fi = $invoice_items[0];
+            if(is_object($fi)) $fi = (array)$fi;
+            $first_item_desc = trim((string)($fi['description'] ?? $fi['long_description'] ?? ''));
+            if($first_item_desc === '' && isset($fi['long_description'])){ $first_item_desc = trim((string)$fi['long_description']); }
+        }
+        $descripcion_final = $first_item_desc ?: format_invoice_number($invoice->id);
         $invoice_data = [
             "serie" => $invoice->prefix,
             "numero" => $invoice->number,
             "fecha_expedicion" => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
             "tipo_factura" => $tipo_factura_calc,
-            "descripcion" => format_invoice_number($invoice->id),
+            "descripcion" => $descripcion_final,
             "fecha_operacion" => date('d-m-Y'),
             "nif" => $nif,
             "nombre" => $nombre,
@@ -940,9 +949,19 @@ class VerifactiHooks
         }
         $nif = $recipient_nif; $nombre = $recipient_name;
         $tipo = $this->determineTipoFactura('credit_note');
-        $descripcion = 'Rectificativa';
-        if(!empty($credit->invoice_id)){
-            $descripcion .= ' de '.format_invoice_number($credit->invoice_id);
+        // Descripción: usar concepto primer ítem si existe; fallback 'Rectificativa' (+ ref)
+        $descripcion = null;
+        if(isset($credit->items[0])){
+            $fi = $credit->items[0];
+            if(is_object($fi)) $fi = (array)$fi;
+            $descripcion = trim((string)($fi['description'] ?? $fi['long_description'] ?? ''));
+            if($descripcion === '' && isset($fi['long_description'])){ $descripcion = trim((string)$fi['long_description']); }
+        }
+        if($descripcion === null || $descripcion===''){
+            $descripcion = 'Rectificativa';
+            if(!empty($credit->invoice_id)){
+                $descripcion .= ' de '.format_invoice_number($credit->invoice_id);
+            }
         }
         $invoice_data = [
             'serie' => $credit->prefix,
