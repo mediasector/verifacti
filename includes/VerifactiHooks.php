@@ -430,6 +430,11 @@ class VerifactiHooks
         $this->ensureInvoiceSchema();
         $invoice = $this->ci->invoices_model->get($invoice_id);
         if(!$invoice){ if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: factura no encontrada ID='.$invoice_id.' source='.$source); } return; }
+        // Filtro: no enviar si fecha expedición anterior a fecha de entrada en funcionamiento
+        if(isset($invoice->date) && verifacti_is_before_start($invoice->date)){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: saltando por start_date ('.$invoice->date.') ID='.$invoice_id); }
+            return;
+        }
     // (Fix #6) Eliminado filtro que bloqueaba facturas con fecha anterior. Permitimos envío atrasado.
         // No enviar nunca facturas en borrador (draft). En Perfex normalmente el estado draft es el código 6 o la cadena 'draft'.
         if(!$force && isset($invoice->status)){
@@ -910,6 +915,10 @@ class VerifactiHooks
         if(!function_exists('get_credit_note_item_taxes')){ $this->ci->load->helper('credit_notes'); }
         $credit = $this->ci->credit_notes_model->get($credit_note_id);
     if(!$credit){ if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: credit note no encontrada ID='.$credit_note_id); } return; }
+    if(isset($credit->date) && verifacti_is_before_start($credit->date)){
+        if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: saltando por start_date ('.$credit->date.') ID='.$credit_note_id); }
+        return;
+    }
     if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: preparando envío CN ID='.$credit_note_id); }
     $this->ensureInvoiceSchema();
 

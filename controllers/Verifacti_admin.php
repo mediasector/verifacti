@@ -3,7 +3,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class Verifacti_admin extends AdminController
 {
 	protected $post;
-	protected $option_keys = ['enable','api_key'];
+	protected $option_keys = ['enable','api_key','start_date'];
 	protected $email_stats_response = [];
 	protected $setting_key = '';
 	public function __construct(){
@@ -13,7 +13,7 @@ class Verifacti_admin extends AdminController
     }
 
     public function setup(){
-    	if(!empty($this->post)){
+		if(!empty($this->post)){
 			$option_data = array_intersect_key($this->post['verifacti'],array_flip($this->option_keys));
 
 			$form = getVerifactiConfig();
@@ -22,7 +22,7 @@ class Verifacti_admin extends AdminController
     			update_option($this->setting_key,json_encode($form));
     		}
 
-    		set_alert('success', 'API Details Updated!');
+			set_alert('success', 'Configuración actualizada');
 			redirect(VERIFACTI_MODULE_NAME."/setup");die;
     	}else{
     		

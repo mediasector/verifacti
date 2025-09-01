@@ -29,6 +29,11 @@
 								<label for="verifacti_api_key"><?= _l('verifacti_api_key') ?></label>
 								<input type="password" class="form-control" name="verifacti[api_key]" id="verifacti_api_key" placeholder="Enter <?= _l('mautic'),' ',_l('verifacti_api_key') ?>" value="<?= $form['api_key'] ?? '' ?>" required>
 							</div>
+							<div class="form-group">
+								<label for="verifacti_start_date">Entrada en funcionamiento</label>
+								<input type="date" class="form-control" name="verifacti[start_date]" id="verifacti_start_date" value="<?= isset($form['start_date']) ? html_escape($form['start_date']) : '' ?>" placeholder="YYYY-MM-DD">
+								<p class="help-block small">Facturas y notas de crédito con fecha de expedición anterior NO se informarán a Verifacti.</p>
+							</div>
 							
 							<button type="submit" class="btn btn-primary">Submit</button>
 						<?= form_close(); ?>

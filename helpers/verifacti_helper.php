@@ -9,6 +9,21 @@ function getVerifactiConfig($key=''){
 function isVerifactiEnable(){
 	return getVerifactiConfig('enable') == 'yes' ? true : false;
 }
+function verifacti_get_start_date(){
+	$d = getVerifactiConfig('start_date');
+	if(!$d){ return null; }
+	// Normalizar a YYYY-MM-DD
+	if(preg_match('/^\d{4}-\d{2}-\d{2}$/',$d)){ return $d; }
+	$ts = strtotime($d);
+	return $ts ? date('Y-m-d',$ts) : null;
+}
+function verifacti_is_before_start($date){
+	$start = verifacti_get_start_date();
+	if(!$start){ return false; } // sin restricción
+	if(!$date){ return false; }
+	$doc = date('Y-m-d', strtotime($date));
+	return $doc < $start;
+}
 if(!function_exists('atCurlRequest')){
 	function atCurlRequest($url, $method = "get", $request_fields = array(), $headers = [], $set_user_agent=false) {
 	    $ch = curl_init();
