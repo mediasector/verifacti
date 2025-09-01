@@ -538,6 +538,11 @@ class VerifactiHooks
         // === DESTINATARIO (Fix destinatario equivocado) ===
         $recipient_nif = '';
         $recipient_name = '';
+        $recipient_id_otro = '';
+        $is_foreign = false;
+        $is_eu = false;
+        // Lista de países UE (ID Perfex habituales, puedes ampliar si tu base usa otros)
+        $eu_country_ids = [8, 56, 100, 191, 196, 203, 208, 233, 246, 250, 276, 300, 348, 352, 372, 380, 428, 440, 442, 470, 528, 616, 620, 642, 703, 705, 724, 752, 826];
         try{
             if(!isset($this->ci->clients_model)){
                 $this->ci->load->model('clients_model');
@@ -545,7 +550,16 @@ class VerifactiHooks
             if(isset($invoice->clientid) && $invoice->clientid){
                 $clientRow = $this->ci->clients_model->get($invoice->clientid);
                 if($clientRow){
-                    $recipient_nif = !empty($clientRow->vat) ? verifacti_normalize_nif($clientRow->vat) : '';
+                    $country_id = isset($clientRow->country) ? (int)$clientRow->country : 195;
+                    $is_foreign = ($country_id !== 195);
+                    $is_eu = ($is_foreign && in_array($country_id, $eu_country_ids));
+                    if(!empty($clientRow->vat)){
+                        if($is_foreign){
+                            $recipient_id_otro = trim($clientRow->vat);
+                        }else{
+                            $recipient_nif = verifacti_normalize_nif($clientRow->vat);
+                        }
+                    }
                     if(!empty($clientRow->company)){
                         $recipient_name = $clientRow->company;
                     }else{
@@ -554,10 +568,11 @@ class VerifactiHooks
                 }
             }
         }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] destinatario load error: '.$e->getMessage()); } }
-        if($recipient_nif === '' || $recipient_name===''){
-            if(function_exists('log_message')){ log_message('debug','[Verifacti] WARNING destinatario incompleto factura ID='.$invoice_id.' nif="'.$recipient_nif.'" nombre="'.$recipient_name.'"'); }
+        if((!$recipient_nif && !$recipient_id_otro) || $recipient_name===''){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] WARNING destinatario incompleto factura ID='.$invoice_id.' nif="'.$recipient_nif.'" id_otro="'.$recipient_id_otro.'" nombre="'.$recipient_name.'"'); }
         }
-        $nif = $recipient_nif; // Campos API representan destinatario
+        $nif = $recipient_nif;
+        $id_otro = $recipient_id_otro;
         $nombre = $recipient_name;
         // Clasificación F2 (simplificada) si no hay NIF destinatario válido y total dentro de umbral
         $maxF2 = defined('VERIFACTI_F2_MAX_TOTAL') ? VERIFACTI_F2_MAX_TOTAL : 3000; // importe total con impuestos
@@ -578,27 +593,25 @@ class VerifactiHooks
         }
         $descripcion_final = $first_item_desc ?: format_invoice_number($invoice->id);
         // === Derivar serie y número reales según formato seleccionado en Perfex ===
+        // Si es cliente UE (excepto España), forzar tipo F1
+        if($is_eu && ($tipo_factura_calc === 'F2' || $tipo_factura_calc === 'R5')){
+            $tipo_factura_calc = 'F1';
+        }
         $raw_formatted = format_invoice_number($invoice->id);
-        $serie_final = $invoice->prefix; // base
+        $serie_final = $invoice->prefix;
         $numero_final = $invoice->number;
-        // Casos:
-        // 1) PREF-YYYY/NNNN  -> serie PREF-YYYY, numero NNNN
-        // 2) YYYY/NNNN (sin prefijo) -> serie YYYY, numero NNNN
-        // 3) PREF-NNNNN -> serie PREF, numero NNNNN (ya por defecto)
-        // 4) PREF-YYYYMM/NNNN (mensual) -> serie PREF-YYYYMM, numero NNNN
-        if(preg_match('/^([A-Z0-9]+)-(\d{4})(\d{2})?\/(\d{1,})$/i',$raw_formatted,$m)){
-            // PREF-YYYY or PREF-YYYYMM
-            $pref = $m[1]; $year = $m[2]; $maybeMonth = $m[3]; $num = ltrim($m[4],'0');
-            $serie_final = $pref.'-'.$year.($maybeMonth? $maybeMonth : '');
-            $numero_final = $num !== '' ? $num : $m[4];
-        }elseif(preg_match('/^(\d{4})\/(\d{1,})$/',$raw_formatted,$m)){
-            // YYYY/NNNN
-            $serie_final = $m[1];
-            $numero_final = ltrim($m[2],'0');
-        }elseif(preg_match('/^([A-Z0-9]+)-(\d{1,})$/i',$raw_formatted,$m)){
-            // PREF-NNNN
-            $serie_final = $m[1];
-            $numero_final = ltrim($m[2],'0');
+        // Si hay barra, la serie incluye la barra final
+        if(strpos($raw_formatted, '/') !== false){
+            $pos = strpos($raw_formatted, '/');
+            $serie_final = substr($raw_formatted, 0, $pos+1);
+            $numero_final = substr($raw_formatted, $pos+1);
+            $numero_final = ltrim($numero_final, '0');
+        }else{
+            // Si no hay barra, usar prefijo y número como fallback
+            if(preg_match('/^([^\d]*)(.+)$/', $raw_formatted, $m)){
+                $serie_final = $m[1];
+                $numero_final = $m[2];
+            }
         }
         if($numero_final === ''){ $numero_final = $invoice->number; }
         $invoice_data = [
@@ -608,7 +621,6 @@ class VerifactiHooks
             "tipo_factura" => $tipo_factura_calc,
             "descripcion" => $descripcion_final,
             "fecha_operacion" => date('d-m-Y'),
-            "nif" => $nif,
             "nombre" => $nombre,
             /*"lineas" => [
                 [
@@ -619,6 +631,16 @@ class VerifactiHooks
             ],*/
             "importe_total" => $invoice->total
         ];
+        // Añadir campo fiscal correcto según país
+        if($is_foreign && $id_otro){
+            $invoice_data['id_otro'] = $id_otro;
+        }elseif(!$is_foreign && $nif){
+            $invoice_data['nif'] = $nif;
+        }
+        // Para F2 y R5 no se deben enviar nombre, nif ni id_otro
+        if(in_array($tipo_factura_calc, ['F2','R5'])){
+            unset($invoice_data['nombre'], $invoice_data['nif'], $invoice_data['id_otro']);
+        }
     // ==== NUEVO CÁLCULO DE LÍNEAS (base_imponible correcta, cantidades, descuento, exentas, exclusión de IRPF) ====
         // Notas:
         // - Perfex aplica descuento a nivel de factura (discount_total). Lo distribuimos proporcionalmente sobre la base de cada item.
@@ -864,6 +886,12 @@ class VerifactiHooks
                 'updated_at' => date('Y-m-d H:i:s')
             ],['id'=>$v_inv_id]);
         }else{
+                // Mostrar error de la API en la interfaz si es 400 y hay mensaje
+                if(isset($response['http_code']) && $response['http_code'] == 400 && isset($result['error'])){
+                    if(function_exists('set_alert')){
+                        set_alert('danger', '[Verifacti] Error al registrar factura: '.htmlspecialchars($result['error']));
+                    }
+                }
             // En caso de fallo de primera creación eliminamos; en modify conservamos registro
             if(!$invoice_prev){
                 $this->ci->verifacti_model->delete('invoices',['id'=>$v_inv_id]);
