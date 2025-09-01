@@ -87,6 +87,16 @@ class VerifactiHooks
             /**MY CUSTOM HOOKS*/
             hooks()->add_action('after_email_fields_invoice_send_to_client',[$this,'renderVerifactiFields']);
             hooks()->add_filter('invoice_pdf_after_invoice_header_number',[$this,'afterInvoicePdfInfo'],10,2);
+            // Filtros PDF adicionales (compatibilidad distintas versiones Perfex)
+            $invoicePdfFilters = [
+                'invoice_pdf_after_invoice_number',
+                'invoice_pdf_after_invoice_heading',
+                'invoice_pdf_after_invoice_content',
+                'invoice_pdf_after_invoice_info',
+                'invoice_pdf_after_invoice_date',
+                'invoice_pdf_after_invoice_client_details'
+            ];
+            foreach($invoicePdfFilters as $ipf){ hooks()->add_filter($ipf,[$this,'afterInvoicePdfInfo'],10,2); }
             // Hooks PDF para notas de crédito (intentamos varias variantes posibles)
             $creditPdfFilters = [
                 // Filtros conocidos / supuestos
@@ -235,8 +245,32 @@ class VerifactiHooks
     $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id],
             ['column'=>'id','order'=>'DESC']);
         if($verifacti_invoice){
-            $html = generateVerifactiQr($verifacti_invoice);
-            $invoice_info .= $html;
+            if(empty($verifacti_invoice->qr_image_base64) && !empty($verifacti_invoice->verifacti_id)){
+                // Intento rápido único: pedir status una vez para poblar QR justo antes de render PDF
+                try{
+                    $payloadStatus = [
+                        'serie' => $invoice->prefix,
+                        'numero' => $invoice->number,
+                        'fecha_expedicion' => !empty($invoice->date)?date('d-m-Y',strtotime($invoice->date)):date('d-m-Y',strtotime($invoice->datecreated)),
+                        'fecha_operacion' => !empty($invoice->date)?date('d-m-Y',strtotime($invoice->date)):date('d-m-Y',strtotime($invoice->datecreated))
+                    ];
+                    $resp = $this->ci->verifacti_lib->invoice_status($payloadStatus);
+                    if(isset($resp['success']) && $resp['success'] && isset($resp['result']['qr']) && isset($resp['result']['url'])){
+                        $this->ci->verifacti_model->save('invoices',[
+                            'qr_url' => $resp['result']['url'],
+                            'qr_image_base64' => $resp['result']['qr'],
+                            'status' => $resp['result']['estado'] ?? ($verifacti_invoice->status?:'desconocido'),
+                            'updated_at' => date('Y-m-d H:i:s')
+                        ],['id'=>$verifacti_invoice->id]);
+                        // refrescar objeto
+                        $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id]);
+                    }
+                }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoicePdfInfo status error: '.$e->getMessage()); } }
+            }
+            if(!empty($verifacti_invoice->qr_image_base64)){
+                $html = generateVerifactiQr($verifacti_invoice);
+                $invoice_info .= $html;
+            }
         }
         return $invoice_info;
      }
@@ -531,8 +565,23 @@ class VerifactiHooks
             if($first_item_desc === '' && isset($fi['long_description'])){ $first_item_desc = trim((string)$fi['long_description']); }
         }
         $descripcion_final = $first_item_desc ?: format_invoice_number($invoice->id);
+        // Determinar serie (incluir año si el formato de Perfex lo muestra como PREF-YYYY/NUMERO)
+        $serie = $invoice->prefix;
+        if(function_exists('format_invoice_number')){
+            try{
+                $formatted_tmp = format_invoice_number($invoice->id);
+                // Ej esperado: MS-2025/700  -> serie debe ser MS-2025 y numero 700
+                if(is_string($formatted_tmp) && preg_match('/^([A-Z0-9_-]+)-([0-9]{4})\/(\d+)/i',$formatted_tmp,$m)){
+                    $prefMatch = $m[1]; $yearMatch = $m[2]; $numMatch = $m[3];
+                    // Validar que concuerda con prefix y numero actuales (ignorar ceros a la izquierda en numero)
+                    if(strtoupper($prefMatch) === strtoupper($invoice->prefix) && (int)$numMatch == (int)$invoice->number){
+                        $serie = $prefMatch.'-'.$yearMatch; // incluir año
+                    }
+                }
+            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] serie year parse invoice error: '.$e->getMessage()); } }
+        }
         $invoice_data = [
-            "serie" => $invoice->prefix,
+            "serie" => $serie,
             "numero" => $invoice->number,
             "fecha_expedicion" => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
             "tipo_factura" => $tipo_factura_calc,
@@ -963,8 +1012,22 @@ class VerifactiHooks
                 $descripcion .= ' de '.format_invoice_number($credit->invoice_id);
             }
         }
+        // Determinar serie para la nota de crédito (incluir año si el formato lo muestra)
+        $serie_cn = $credit->prefix;
+        if(function_exists('format_credit_note_number')){
+            try{
+                $formatted_cn = format_credit_note_number($credit->id);
+                // Ej: NC-2025/15 -> serie NC-2025 numero 15
+                if(is_string($formatted_cn) && preg_match('/^([A-Z0-9_-]+)-([0-9]{4})\/(\d+)/i',$formatted_cn,$m)){
+                    $prefMatch = $m[1]; $yearMatch = $m[2]; $numMatch = $m[3];
+                    if(strtoupper($prefMatch) === strtoupper($credit->prefix) && (int)$numMatch == (int)$credit->number){
+                        $serie_cn = $prefMatch.'-'.$yearMatch;
+                    }
+                }
+            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] serie year parse credit error: '.$e->getMessage()); } }
+        }
         $invoice_data = [
-            'serie' => $credit->prefix,
+            'serie' => $serie_cn,
             'numero' => $credit->number,
             'fecha_expedicion' => !empty($credit->date) ? date('d-m-Y', strtotime($credit->date)) : date('d-m-Y'),
             'tipo_factura' => $tipo,
