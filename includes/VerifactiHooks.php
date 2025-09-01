@@ -35,7 +35,8 @@ class VerifactiHooks
             // hooks()->add_action('after_invoice_added',[$this,'afterInvoiceCreated']);
             hooks()->add_action('invoice_updated',[$this,'afterInvoiceUpdated']);
             hooks()->add_action('after_right_panel_invoicehtml',[$this,'afterInvoiceLeftHtml']);
-            // hooks()->add_action('invoice_pdf_info',[$this,'afterInvoicePdfInfo'],10,2);
+            // Activamos también el hook base invoice_pdf_info (algunas plantillas solo usan este)
+            hooks()->add_filter('invoice_pdf_info',[$this,'afterInvoicePdfInfo'],10,2);
             // 
 
             hooks()->add_action('invoice_object_before_send_to_client',[$this,'beforeInvoiceSentClient']);
@@ -565,23 +566,8 @@ class VerifactiHooks
             if($first_item_desc === '' && isset($fi['long_description'])){ $first_item_desc = trim((string)$fi['long_description']); }
         }
         $descripcion_final = $first_item_desc ?: format_invoice_number($invoice->id);
-        // Determinar serie (incluir año si el formato de Perfex lo muestra como PREF-YYYY/NUMERO)
-        $serie = $invoice->prefix;
-        if(function_exists('format_invoice_number')){
-            try{
-                $formatted_tmp = format_invoice_number($invoice->id);
-                // Ej esperado: MS-2025/700  -> serie debe ser MS-2025 y numero 700
-                if(is_string($formatted_tmp) && preg_match('/^([A-Z0-9_-]+)-([0-9]{4})\/(\d+)/i',$formatted_tmp,$m)){
-                    $prefMatch = $m[1]; $yearMatch = $m[2]; $numMatch = $m[3];
-                    // Validar que concuerda con prefix y numero actuales (ignorar ceros a la izquierda en numero)
-                    if(strtoupper($prefMatch) === strtoupper($invoice->prefix) && (int)$numMatch == (int)$invoice->number){
-                        $serie = $prefMatch.'-'.$yearMatch; // incluir año
-                    }
-                }
-            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] serie year parse invoice error: '.$e->getMessage()); } }
-        }
         $invoice_data = [
-            "serie" => $serie,
+            "serie" => $invoice->prefix,
             "numero" => $invoice->number,
             "fecha_expedicion" => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
             "tipo_factura" => $tipo_factura_calc,
@@ -1012,22 +998,8 @@ class VerifactiHooks
                 $descripcion .= ' de '.format_invoice_number($credit->invoice_id);
             }
         }
-        // Determinar serie para la nota de crédito (incluir año si el formato lo muestra)
-        $serie_cn = $credit->prefix;
-        if(function_exists('format_credit_note_number')){
-            try{
-                $formatted_cn = format_credit_note_number($credit->id);
-                // Ej: NC-2025/15 -> serie NC-2025 numero 15
-                if(is_string($formatted_cn) && preg_match('/^([A-Z0-9_-]+)-([0-9]{4})\/(\d+)/i',$formatted_cn,$m)){
-                    $prefMatch = $m[1]; $yearMatch = $m[2]; $numMatch = $m[3];
-                    if(strtoupper($prefMatch) === strtoupper($credit->prefix) && (int)$numMatch == (int)$credit->number){
-                        $serie_cn = $prefMatch.'-'.$yearMatch;
-                    }
-                }
-            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] serie year parse credit error: '.$e->getMessage()); } }
-        }
         $invoice_data = [
-            'serie' => $serie_cn,
+            'serie' => $credit->prefix,
             'numero' => $credit->number,
             'fecha_expedicion' => !empty($credit->date) ? date('d-m-Y', strtotime($credit->date)) : date('d-m-Y'),
             'tipo_factura' => $tipo,
