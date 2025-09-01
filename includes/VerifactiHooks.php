@@ -243,11 +243,9 @@ class VerifactiHooks
     }
     public function afterInvoicePdfInfo($invoice_info, $invoice){
         $invoice_id = $invoice->id;
-    $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id],
-            ['column'=>'id','order'=>'DESC']);
+        $verifacti_invoice = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice_id ],['column'=>'id','order'=>'DESC']);
         if($verifacti_invoice){
             if(empty($verifacti_invoice->qr_image_base64) && !empty($verifacti_invoice->verifacti_id)){
-                // Intento rápido único: pedir status una vez para poblar QR justo antes de render PDF
                 try{
                     $payloadStatus = [
                         'serie' => $invoice->prefix,
@@ -263,37 +261,31 @@ class VerifactiHooks
                             'status' => $resp['result']['estado'] ?? ($verifacti_invoice->status?:'desconocido'),
                             'updated_at' => date('Y-m-d H:i:s')
                         ],['id'=>$verifacti_invoice->id]);
-                        // refrescar objeto
-                        $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id]);
+                        $verifacti_invoice = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice_id ]);
                     }
                 }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoicePdfInfo status error: '.$e->getMessage()); } }
             }
-            // Inyección controlada únicamente una vez (múltiples filtros pueden llamar a este método)
             static $verifacti_qr_injected = false;
             if(!$verifacti_qr_injected && !empty($verifacti_invoice->qr_image_base64)){
-                $html = generateVerifactiQr($verifacti_invoice);
-                // Añadimos un wrapper para facilitar estilos posicionales si se requiere más tarde
-                $htmlWrapped = '<div class="verifacti-qr-after-status" style="display:inline-block; vertical-align:middle; margin-left:10px;">'.$html.'</div>';
+                $qrBlock = generateVerifactiQr($verifacti_invoice);
+                $htmlWrapped = '<div class="verifacti-qr-after-status" style="margin-top:6px;">'.$qrBlock.'</div>';
                 $inserted = false;
-                // Buscar etiqueta de estado típica (span label) y colocar justo después
-                if(is_string($invoice_info) && preg_match('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>.*?<\/span>)/i',$invoice_info,$m)){
-                    $invoice_info = preg_replace('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>.*?<\/span>)/i','$1'.$htmlWrapped,$invoice_info,1);
-                    $inserted = true;
+                if(is_string($invoice_info)){
+                    if(preg_match('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>\s*(?:POR\s+PAGAR|PAGADA|NO\s+PAGADA)[^<]*<\/span>)/i',$invoice_info,$m)){
+                        $invoice_info = preg_replace('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>\s*(?:POR\s+PAGAR|PAGADA|NO\s+PAGADA)[^<]*<\/span>)/i','$1'.$htmlWrapped,$invoice_info,1);
+                        $inserted = true;
+                    }
+                    if(!$inserted && preg_match('/(POR\s+PAGAR|PAGADA|NO\s+PAGADA)/i',$invoice_info)){
+                        $invoice_info = preg_replace('/(POR\s+PAGAR|PAGADA|NO\s+PAGADA)/i','$1'.$htmlWrapped,$invoice_info,1);
+                        $inserted = true;
+                    }
                 }
-                // Alternativa: buscar palabras clave POR PAGAR / PAGADA si no se encontró span
-                if(!$inserted && preg_match('/(POR\s+PAGAR|PAGADA)/i',$invoice_info,$m2)){
-                    $invoice_info = preg_replace('/(POR\s+PAGAR|PAGADA)/i','$1'.$htmlWrapped,$invoice_info,1);
-                    $inserted = true;
-                }
-                // Fallback: añadir al final
-                if(!$inserted){
-                    $invoice_info .= $htmlWrapped;
-                }
+                if(!$inserted){ $invoice_info .= $htmlWrapped; }
                 $verifacti_qr_injected = true;
             }
         }
         return $invoice_info;
-     }
+    }
     public function afterCreditNotePdfInfo($credit_note_info, $credit_note){
         $id = isset($credit_note->id)?$credit_note->id:null;
         if(!$id){ return $credit_note_info; }
@@ -585,9 +577,33 @@ class VerifactiHooks
             if($first_item_desc === '' && isset($fi['long_description'])){ $first_item_desc = trim((string)$fi['long_description']); }
         }
         $descripcion_final = $first_item_desc ?: format_invoice_number($invoice->id);
+        // === Derivar serie y número reales según formato seleccionado en Perfex ===
+        $raw_formatted = format_invoice_number($invoice->id);
+        $serie_final = $invoice->prefix; // base
+        $numero_final = $invoice->number;
+        // Casos:
+        // 1) PREF-YYYY/NNNN  -> serie PREF-YYYY, numero NNNN
+        // 2) YYYY/NNNN (sin prefijo) -> serie YYYY, numero NNNN
+        // 3) PREF-NNNNN -> serie PREF, numero NNNNN (ya por defecto)
+        // 4) PREF-YYYYMM/NNNN (mensual) -> serie PREF-YYYYMM, numero NNNN
+        if(preg_match('/^([A-Z0-9]+)-(\d{4})(\d{2})?\/(\d{1,})$/i',$raw_formatted,$m)){
+            // PREF-YYYY or PREF-YYYYMM
+            $pref = $m[1]; $year = $m[2]; $maybeMonth = $m[3]; $num = ltrim($m[4],'0');
+            $serie_final = $pref.'-'.$year.($maybeMonth? $maybeMonth : '');
+            $numero_final = $num !== '' ? $num : $m[4];
+        }elseif(preg_match('/^(\d{4})\/(\d{1,})$/',$raw_formatted,$m)){
+            // YYYY/NNNN
+            $serie_final = $m[1];
+            $numero_final = ltrim($m[2],'0');
+        }elseif(preg_match('/^([A-Z0-9]+)-(\d{1,})$/i',$raw_formatted,$m)){
+            // PREF-NNNN
+            $serie_final = $m[1];
+            $numero_final = ltrim($m[2],'0');
+        }
+        if($numero_final === ''){ $numero_final = $invoice->number; }
         $invoice_data = [
-            "serie" => $invoice->prefix,
-            "numero" => $invoice->number,
+            "serie" => $serie_final,
+            "numero" => $numero_final,
             "fecha_expedicion" => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
             "tipo_factura" => $tipo_factura_calc,
             "descripcion" => $descripcion_final,

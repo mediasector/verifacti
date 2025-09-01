@@ -6,7 +6,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
 Module Name: Media Sector Verifacti Integration
 Description: Verifacti API integration for Perfex CRM
 Author: Asif Thebepotra, Íñigo Sastre (Media Sector)
-Version: 0.3
+Version: 0.5.1
 */
 define('VERIFACTI_MODULE_NAME','verifacti');
 define('VERIFACTI_MODULE_DIR',__DIR__);
