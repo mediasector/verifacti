@@ -268,9 +268,28 @@ class VerifactiHooks
                     }
                 }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoicePdfInfo status error: '.$e->getMessage()); } }
             }
-            if(!empty($verifacti_invoice->qr_image_base64)){
+            // Inyección controlada únicamente una vez (múltiples filtros pueden llamar a este método)
+            static $verifacti_qr_injected = false;
+            if(!$verifacti_qr_injected && !empty($verifacti_invoice->qr_image_base64)){
                 $html = generateVerifactiQr($verifacti_invoice);
-                $invoice_info .= $html;
+                // Añadimos un wrapper para facilitar estilos posicionales si se requiere más tarde
+                $htmlWrapped = '<div class="verifacti-qr-after-status" style="display:inline-block; vertical-align:middle; margin-left:10px;">'.$html.'</div>';
+                $inserted = false;
+                // Buscar etiqueta de estado típica (span label) y colocar justo después
+                if(is_string($invoice_info) && preg_match('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>.*?<\/span>)/i',$invoice_info,$m)){
+                    $invoice_info = preg_replace('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>.*?<\/span>)/i','$1'.$htmlWrapped,$invoice_info,1);
+                    $inserted = true;
+                }
+                // Alternativa: buscar palabras clave POR PAGAR / PAGADA si no se encontró span
+                if(!$inserted && preg_match('/(POR\s+PAGAR|PAGADA)/i',$invoice_info,$m2)){
+                    $invoice_info = preg_replace('/(POR\s+PAGAR|PAGADA)/i','$1'.$htmlWrapped,$invoice_info,1);
+                    $inserted = true;
+                }
+                // Fallback: añadir al final
+                if(!$inserted){
+                    $invoice_info .= $htmlWrapped;
+                }
+                $verifacti_qr_injected = true;
             }
         }
         return $invoice_info;
