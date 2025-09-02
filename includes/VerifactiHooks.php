@@ -316,23 +316,20 @@ class VerifactiHooks
                 return $invoice; // se enviará cuando Perfex realice el envío real (hook de marcado como enviada)
             }
         }
-        // Manejo especial de borrador: si el usuario está enviando (Save & Send) queremos registrar y esperar QR
-        $force_send_even_if_draft = false;
-        if(isset($invoice->status)){
-            $st = $invoice->status;
-            $isDraft = ($st === 'draft' || $st === 'Draft' || (is_numeric($st) && (int)$st === 6));
-            if($isDraft){
-                // Si NO es un envío programado (send_later flags ya filtrados arriba) asumimos acción explícita del usuario de enviar ahora.
-                // Permitimos forzar registro para obtener QR antes de generar el PDF adjunto.
-                $force_send_even_if_draft = true;
+            // Eliminado forzado de envío para drafts: nunca enviar borradores
+            if(isset($invoice->status)){
+                $st = $invoice->status;
+                if($st === 'draft' || $st === 'Draft' || (is_numeric($st) && (int)$st === 6)){
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] beforeInvoiceSentClient: abort envío email (draft) ID='.$invoice->id); }
+                    return $invoice; // no continúa
+                }
             }
-        }
         // Determinar si se debe enviar (modo manual o automático)
         $send_to_verifacti = defined('VERIFACTI_MANUAL_SEND_ENABLED') && VERIFACTI_MANUAL_SEND_ENABLED
             ? ($this->ci->input->post('send_to_verifacti') ?? false)
             : true;
         if($send_to_verifacti){
-            $this->sendInvoiceVerifacti($invoice->id,'before_send_email',$force_send_even_if_draft);
+                $this->sendInvoiceVerifacti($invoice->id,'before_send_email',false);
             // Verificar si ya existe registro con QR antes de esperar
             $row = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice->id ]);
             if($row && !empty($row->qr_image_base64)){
@@ -482,14 +479,21 @@ class VerifactiHooks
             return;
         }
     // (Fix #6) Eliminado filtro que bloqueaba facturas con fecha anterior. Permitimos envío atrasado.
-        // No enviar nunca facturas en borrador (draft). En Perfex normalmente el estado draft es el código 6 o la cadena 'draft'.
-        if(!$force && isset($invoice->status)){
+        // No enviar nunca facturas en borrador (draft) independientemente del parámetro force.
+        if(isset($invoice->status)){
             $st = $invoice->status;
             if($st === 'draft' || $st === 'Draft' || (is_numeric($st) && (int)$st === 6)){
-                if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: saltando draft ID='.$invoice_id.' source='.$source); } return; // Saltar envío para borradores si no se fuerza
+                if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: bloqueada (draft) ID='.$invoice_id.' source='.$source); }
+                return;
             }
-        }elseif($force && function_exists('log_message')){
-            log_message('debug','[Verifacti] sendInvoiceVerifacti: FORZADO envío aunque draft ID='.$invoice_id.' source='.$source);
+        }
+        // Bloqueo adicional: si el número formateado contiene DRAFT / INV-DRAFT, nunca enviar.
+        if(function_exists('format_invoice_number')){
+            $formatted_number = format_invoice_number($invoice_id);
+            if(stripos($formatted_number,'DRAFT') !== false){
+                if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: bloqueada por formatted_number con DRAFT ID='.$invoice_id.' number='.$formatted_number); }
+                return;
+            }
         }
         // Evitar reenvío si ya tenemos verifacti_id o estado Registrado
         $existing = $this->ci->verifacti_model->get('invoices',['single'=>true,'invoice_id'=>$invoice_id]);
@@ -538,11 +542,12 @@ class VerifactiHooks
         // === DESTINATARIO (Fix destinatario equivocado) ===
         $recipient_nif = '';
         $recipient_name = '';
-        $recipient_id_otro = '';
+        $recipient_id_otro = null; // usaremos array sólo si extranjero
         $is_foreign = false;
         $is_eu = false;
-        // Lista de países UE (ID Perfex habituales, puedes ampliar si tu base usa otros)
-        $eu_country_ids = [8, 56, 100, 191, 196, 203, 208, 233, 246, 250, 276, 300, 348, 352, 372, 380, 428, 440, 442, 470, 528, 616, 620, 642, 703, 705, 724, 752, 826];
+        $countryIso = 'ES';
+        // Lista de países UE (códigos ISO2)
+        $eu_iso = ['AT','BE','BG','CY','CZ','DE','DK','EE','ES','FI','FR','GR','HR','HU','IE','IT','LT','LU','LV','MT','NL','PL','PT','RO','SE','SI','SK'];
         try{
             if(!isset($this->ci->clients_model)){
                 $this->ci->load->model('clients_model');
@@ -550,14 +555,26 @@ class VerifactiHooks
             if(isset($invoice->clientid) && $invoice->clientid){
                 $clientRow = $this->ci->clients_model->get($invoice->clientid);
                 if($clientRow){
-                    $country_id = isset($clientRow->country) ? (int)$clientRow->country : 195;
-                    $is_foreign = ($country_id !== 195);
-                    $is_eu = ($is_foreign && in_array($country_id, $eu_country_ids));
+                    $country_id = isset($clientRow->country) ? (int)$clientRow->country : null;
+                    if($country_id){
+                        try{
+                            $rowC = $this->ci->db->where('country_id',$country_id)->get(db_prefix().'countries')->row();
+                            if($rowC && isset($rowC->iso2)){ $countryIso = strtoupper($rowC->iso2); }
+                        }catch(\Exception $e){}
+                    }
+                    $is_foreign = ($countryIso !== 'ES');
+                    $is_eu = in_array($countryIso,$eu_iso,true) && $countryIso!=='ES';
                     if(!empty($clientRow->vat)){
-                        if($is_foreign){
-                            $recipient_id_otro = trim($clientRow->vat);
+                        $rawVat = strtoupper(trim($clientRow->vat));
+                        $rawVat = preg_replace('/\s+/','',$rawVat);
+                        // Si empieza por ES quitar prefijo país para NIF
+                        if(strpos($rawVat,'ES')===0){ $rawVat = substr($rawVat,2); }
+                        // Si es doméstico tratamos siempre como NIF
+                        if(!$is_foreign){
+                            $recipient_nif = verifacti_normalize_nif($rawVat);
                         }else{
-                            $recipient_nif = verifacti_normalize_nif($clientRow->vat);
+                            // extranjero: crear estructura id_otro según API (id_type genérico 03 por defecto)
+                            $recipient_id_otro = [ 'codigo_pais'=>$countryIso, 'id_type'=>'03', 'id'=>$rawVat ];
                         }
                     }
                     if(!empty($clientRow->company)){
@@ -569,19 +586,22 @@ class VerifactiHooks
             }
         }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] destinatario load error: '.$e->getMessage()); } }
         if((!$recipient_nif && !$recipient_id_otro) || $recipient_name===''){
-            if(function_exists('log_message')){ log_message('debug','[Verifacti] WARNING destinatario incompleto factura ID='.$invoice_id.' nif="'.$recipient_nif.'" id_otro="'.$recipient_id_otro.'" nombre="'.$recipient_name.'"'); }
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] WARNING destinatario incompleto factura ID='.$invoice_id.' nif="'.$recipient_nif.'" id_otro='.(is_array($recipient_id_otro)?json_encode($recipient_id_otro):'"'.($recipient_id_otro??'').'"').' nombre="'.$recipient_name.'"'); }
         }
         $nif = $recipient_nif;
         $id_otro = $recipient_id_otro;
         $nombre = $recipient_name;
-        // Clasificación F2 (simplificada) si no hay NIF destinatario válido y total dentro de umbral
-        $maxF2 = defined('VERIFACTI_F2_MAX_TOTAL') ? VERIFACTI_F2_MAX_TOTAL : 3000; // importe total con impuestos
+        $maxF2 = defined('VERIFACTI_F2_MAX_TOTAL') ? VERIFACTI_F2_MAX_TOTAL : 3000; // aún disponible pero sólo si sin identificador
         $recipient_nif_valid = ($nif !== '' && preg_match('/^[A-Z0-9]{5,}$/i', $nif));
-        $tipo_factura_calc = $this->determineTipoFactura('invoice'); // por defecto F1
-        if(!$recipient_nif_valid && isset($invoice->total) && (float)$invoice->total <= $maxF2 && (float)$invoice->total >= 0){
+        $hasFiscalId = $recipient_nif_valid || (is_array($id_otro) && !empty($id_otro['id']));
+        $tipo_factura_calc = 'F1'; // base
+        if(!$hasFiscalId && isset($invoice->total) && (float)$invoice->total <= $maxF2){
+            // Sólo si realmente NO tenemos ningún identificador usar F2
             $tipo_factura_calc = 'F2';
-            if(function_exists('log_message')){ log_message('debug','[Verifacti] Clasificada como F2 (sin NIF destinatario, total='.$invoice->total.') ID='.$invoice_id); }
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] Clasificada como F2 (sin identificador fiscal) ID='.$invoice_id); }
         }
+        // Log diagnóstico
+        if(function_exists('log_message')){ log_message('debug','[Verifacti] Destinatario: iso='.$countryIso.' nif='.$nif.' hasIdOtro='.(is_array($id_otro)?'1':'0').' tipo_preliminar='.$tipo_factura_calc); }
         // fecha_expedicion debe reflejar la fecha fiscal de la factura (Invoice->date) y no la fecha de creación del registro (datecreated)
         // Descripción: usar concepto del primer ítem si existe, en fallback el número formateado
         $first_item_desc = null;
@@ -631,16 +651,17 @@ class VerifactiHooks
             ],*/
             "importe_total" => $invoice->total
         ];
+    // Garantizar F1 definitivo si se cumplen condiciones (redundante por seguridad)
+    if($nombre !== '' && (isset($invoice_data['nif']) || isset($invoice_data['id_otro']))){ $invoice_data['tipo_factura'] = 'F1'; }
         // Añadir campo fiscal correcto según país
-        if($is_foreign && $id_otro){
-            $invoice_data['id_otro'] = $id_otro;
+        if($is_foreign && is_array($id_otro)){
+            $invoice_data['id_otro'] = $id_otro; // estructura completa
         }elseif(!$is_foreign && $nif){
             $invoice_data['nif'] = $nif;
         }
-        // Para F2 y R5 no se deben enviar nombre, nif ni id_otro
-        if(in_array($tipo_factura_calc, ['F2','R5'])){
-            unset($invoice_data['nombre'], $invoice_data['nif'], $invoice_data['id_otro']);
-        }
+        // Si finalmente se detectó identificador se refuerza F1
+        if(isset($invoice_data['nif']) || isset($invoice_data['id_otro'])){ $invoice_data['tipo_factura']='F1'; }
+        // Eliminada limpieza F2/R5.
     // ==== NUEVO CÁLCULO DE LÍNEAS (base_imponible correcta, cantidades, descuento, exentas, exclusión de IRPF) ====
         // Notas:
         // - Perfex aplica descuento a nivel de factura (discount_total). Lo distribuimos proporcionalmente sobre la base de cada item.
@@ -770,6 +791,30 @@ class VerifactiHooks
 
         // Establecer importe_total recalculado (excluye retenciones si Perfex las restó del total original)
         $invoice_data['importe_total'] = number_format($importe_total_calc, 2, '.', '');
+        // --- VIES: si operación exenta E5 y cliente UE (no ES) intentar validar para ascender id_type a 02 ---
+        $hasE5 = false;
+        foreach($invoice_data['lineas'] as $ln){ if(isset($ln['operacion_exenta']) && strtoupper($ln['operacion_exenta'])==='E5'){ $hasE5=true; break; } }
+        if($hasE5 && $is_eu && isset($invoice_data['id_otro']) && is_array($invoice_data['id_otro'])){
+            try{
+                $vatForVies = $invoice_data['id_otro']['id'];
+                // Quitar prefijo país duplicado para la consulta si lo repite
+                $vatCore = $vatForVies;
+                if(stripos($vatCore,$invoice_data['id_otro']['codigo_pais'])===0){ $vatCore = substr($vatCore,strlen($invoice_data['id_otro']['codigo_pais'])); }
+                if(method_exists($this->ci->verifacti_lib,'validate_vies')){
+                    $viesResp = $this->ci->verifacti_lib->validate_vies($invoice_data['id_otro']['codigo_pais'],$invoice_data['id_otro']['codigo_pais'].$vatCore); // La API ejemplo incluye prefijo
+                    if(isset($viesResp['success']) && $viesResp['success'] && isset($viesResp['result']['resultado'])){
+                        if(strtoupper($viesResp['result']['resultado'])==='IDENTIFICADO'){
+                            $invoice_data['id_otro']['id_type'] = '02';
+                            if(function_exists('log_message')){ log_message('debug','[Verifacti] VIES IDENTIFICADO: id_type cambiado a 02 invoice ID='.$invoice_id); }
+                        }else{
+                            if(function_exists('log_message')){ log_message('debug','[Verifacti] VIES NO IDENTIFICADO: mantiene id_type 03 invoice ID='.$invoice_id); }
+                        }
+                    }else{
+                        if(function_exists('log_message')){ log_message('debug','[Verifacti] VIES respuesta inesperada invoice ID='.$invoice_id.' resp='.(isset($viesResp['result'])?json_encode($viesResp['result']):'null')); }
+                    }
+                }
+            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] VIES exception invoice ID='.$invoice_id.' msg='.$e->getMessage()); } }
+        }
         // Limpieza para facturas simplificadas: si tipo_factura F2 y no hay nif destinatario, eliminar claves nif/nombre (la API acepta ausencia)
         if($invoice_data['tipo_factura'] === 'F2'){
             // Siempre eliminar NIF vacío y también el nombre si no hay NIF (simplificada sin identificación destinatario)
@@ -777,6 +822,7 @@ class VerifactiHooks
             if(!isset($invoice_data['nif'])){ unset($invoice_data['nombre']); }
         }
         // ==== FIN NUEVO CÁLCULO ====
+    if(function_exists('log_message')){ log_message('debug','[Verifacti] Payload final antes de create/update ID='.$invoice_id.' tipo='.$invoice_data['tipo_factura'].' nif='.(isset($invoice_data['nif'])?$invoice_data['nif']:'(none)').' id_otro='.(isset($invoice_data['id_otro'])?json_encode($invoice_data['id_otro']):'(none)').' nombre="'.$nombre.'"'); }
         // _print_r($invoice_data);
         // exit;
         // --- Estrategia create vs update (modify) ---
@@ -1061,9 +1107,23 @@ class VerifactiHooks
                 $descripcion .= ' de '.format_invoice_number($credit->invoice_id);
             }
         }
+        // === Derivar serie y número reales de la nota de crédito (mismo criterio que facturas) ===
+        $raw_cn_formatted = function_exists('format_credit_note_number') ? format_credit_note_number($credit->id) : ($credit->prefix.$credit->number);
+        $serie_cn = $credit->prefix; // fallback
+        $numero_cn = $credit->number; // fallback
+        if(strpos($raw_cn_formatted,'/') !== false){
+            $pos = strpos($raw_cn_formatted,'/');
+            $serie_cn = substr($raw_cn_formatted,0,$pos+1); // incluir la barra
+            $numero_cn = substr($raw_cn_formatted,$pos+1);
+            $numero_cn = ltrim($numero_cn,'0');
+        }else{
+            // Intentar separar prefijo no numérico de la parte numérica
+            if(preg_match('/^([^0-9]*)([0-9].*)$/',$raw_cn_formatted,$m)){ $serie_cn = $m[1]; $numero_cn = $m[2]; }
+        }
+        if($numero_cn === '' || $numero_cn === null){ $numero_cn = $credit->number; }
         $invoice_data = [
-            'serie' => $credit->prefix,
-            'numero' => $credit->number,
+            'serie' => $serie_cn,
+            'numero' => $numero_cn,
             'fecha_expedicion' => !empty($credit->date) ? date('d-m-Y', strtotime($credit->date)) : date('d-m-Y'),
             'tipo_factura' => $tipo,
             'descripcion' => $descripcion,

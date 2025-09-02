@@ -149,6 +149,23 @@ class Verifacti_lib
         return $this->request('invoices','POST',$payload); // Ajustar endpoint si la doc usa otro slug
     }
 
+    /**
+     * Validar VAT en sistema VIES vía Verifacti.
+     * Endpoint doc: POST /nifs/validar/vies
+     * Payload: { "codigo_pais":"DE", "iva":"DE123456789" }
+     * Respuesta esperada (200): { "iva":"DE123456789", "resultado":"IDENTIFICADO"|"NO IDENTIFICADO" }
+     */
+    public function validate_vies($countryIso,$vat){
+        $countryIso = strtoupper(trim($countryIso));
+        $vat = strtoupper(preg_replace('/\s+/','',trim($vat)));
+        if(strpos($vat,$countryIso)===0){
+            // Algunos contribuyentes incluyen el prefijo país dentro de iva; la API de ejemplo también lo hace.
+            // Lo dejamos tal cual para coherencia con docs.
+        }
+        $payload = [ 'codigo_pais'=>$countryIso, 'iva'=>$vat ];
+        return $this->request('nifs/validar/vies','POST',$payload);
+    }
+
     /////////////////////////////////
 
     public function submit_tbai_invoice($invoice_data)

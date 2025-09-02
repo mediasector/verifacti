@@ -33,3 +33,7 @@ cache/
 
 # Otros
 *.zip
+
+#Personales
+
+*.interno.*
