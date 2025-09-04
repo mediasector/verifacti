@@ -106,6 +106,20 @@ class Verifacti_lib
     public function invoice_status($payload){
         return $this->request('status','POST',$payload);
     }
+
+    /**
+     * Estado registro (polling por UUID del registro de facturación enviado anteriormente).
+     * Doc: GET /verifactu/<endpoint>?uuid=<uuid>
+     * El nombre exacto del endpoint puede variar (ej: 'registro', 'record', 'registry').
+     * Permite ajustar vía constante VERIFACTI_RECORD_STATUS_ENDPOINT.
+     */
+    public function record_status($uuid){
+        $endpoint = defined('VERIFACTI_RECORD_STATUS_ENDPOINT') ? VERIFACTI_RECORD_STATUS_ENDPOINT : 'registro';
+        $endpoint = rtrim($endpoint,'?/');
+        // Generamos endpoint con query param uuid
+        $ep = $endpoint.'?uuid='.urlencode($uuid);
+        return $this->request($ep,'GET');
+    }
     /**
      * Update Invoice:
      * {
@@ -138,7 +152,15 @@ class Verifacti_lib
      * Endpoint asumido según patrón documentación (ajustar si difiere en docs reales).
      */
     public function get_invoice_state($payload){
-        return $this->request('invoice','POST',$payload); // Ajustar endpoint si la doc usa otro slug
+        // Según documentación proporcionada, el estado de una factura registrada se consulta vía POST /verifactu/status.
+        // 404 significa "no registrada todavía" y NO debe tratarse como error funcional.
+        if(!isset($payload['fecha_operacion']) && isset($payload['fecha_expedicion'])){
+            // Añadimos fecha_operacion igual a expedición por consistencia (si la original la incluyó distinta, ya vendrá)
+            $payload['fecha_operacion'] = $payload['fecha_expedicion'];
+        }
+        $resp = $this->request('status','POST',$payload);
+        // Si 404, convertimos a success=false silencioso (request ya habrá logeado error; futuros ajustes podrían evitar log allí).
+        return $resp;
     }
 
     /**

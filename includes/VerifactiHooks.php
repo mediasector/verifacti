@@ -1,10 +1,5 @@
 <?php
 
-// Developed by Asif Thebepotra
-// Modified by Íñigo Sastre:
-// - fecha_expedicion Changed from $invoice->datecreated to real fiscal date --> ($invoice->date in Perfex).
-
-
 class VerifactiHooks
 {
     protected $ci;
@@ -18,23 +13,52 @@ class VerifactiHooks
     $this->ci->load->library([VERIFACTI_MODULE_NAME . '/verifacti_lib']);
     }
 
+    /**
+     * Deriva la serie (incluyendo barra final si existe) y el número a partir del número formateado.
+     * Ejemplos:
+     *   INV-2025/123  => serie: "INV-2025/"  numero: "123"
+     *   FAC-00045     => serie: "FAC-"       numero: "45"
+     *   ABC2025/0007  => serie: "ABC2025/"   numero: "7"
+     * Fallback: si no se puede parsear mantiene prefix y number originales.
+     */
+    protected function parseFormattedSerieNumero($formatted, $fallbackPrefix, $fallbackNumber){
+        $serie = $fallbackPrefix; $numero = $fallbackNumber;
+        if(is_string($formatted) && $formatted !== ''){
+            if(strpos($formatted,'/') !== false){
+                $pos = strpos($formatted,'/');
+                $serie = substr($formatted,0,$pos+1); // incluye la barra
+                $numero = substr($formatted,$pos+1);
+                $numero = ltrim($numero,'0');
+            }else{
+                if(preg_match('/^([^0-9]*)([0-9].*)$/',$formatted,$m)){
+                    $serie = $m[1];
+                    $numero = ltrim($m[2],'0');
+                }
+            }
+            if($numero === '' || $numero === null){ $numero = $fallbackNumber; }
+        }
+        return [$serie,$numero];
+    }
+
     public function init(){
         
-        hooks()->add_action('admin_init',[$this,'add_admin_menu']);
+    hooks()->add_action('admin_init',[$this,'add_admin_menu']);
     // Fallback: revisar facturas marcadas como enviadas que no hayan sido sincronizadas
     hooks()->add_action('admin_init',[$this,'processMarkedAsSentFallback']);
     // Fallback adicional: revisar notas de crédito pendientes en cada carga admin
     hooks()->add_action('admin_init',[$this,'processPendingCreditNotes']);
+    
     // Deshabilitar merge de facturas (cumplimiento España) – UI + servidor
     hooks()->add_action('app_admin_head',[$this,'injectDisableMergeInvoicesCss']);
     hooks()->add_action('pre_controller',[$this,'blockMergeInvoicesRequest']);
+    
     // Validación: no permitir factura > 3000 sin NIF destinatario (obligatorio F1)
     hooks()->add_action('pre_controller',[$this,'enforceSimplifiedInvoiceLimit']);
     if(isVerifactiEnable()){
             // Eliminado envío automático al crear/actualizar: ahora solo al enviar o marcar como enviada.
             // hooks()->add_action('after_invoice_added',[$this,'afterInvoiceCreated']);
             hooks()->add_action('invoice_updated',[$this,'afterInvoiceUpdated']);
-            hooks()->add_action('after_right_panel_invoicehtml',[$this,'afterInvoiceLeftHtml']);
+            hooks()->add_action('after_total_summary_invoicehtml',[$this,'afterInvoiceLeftHtml']);
             // Activamos también el hook base invoice_pdf_info (algunas plantillas solo usan este)
             hooks()->add_filter('invoice_pdf_info',[$this,'afterInvoicePdfInfo'],10,2);
             // 
@@ -85,33 +109,18 @@ class VerifactiHooks
                 ];
                 foreach($creditHooks as $hk=>$cb){ hooks()->add_action($hk,[$this,$cb]); }
             }
-            /**MY CUSTOM HOOKS*/
+            
+            // LLAMADA A CUSTOM HOOKS
+
+            // Renderizar campos personalizados de Verifacti en el email
             hooks()->add_action('after_email_fields_invoice_send_to_client',[$this,'renderVerifactiFields']);
-            hooks()->add_filter('invoice_pdf_after_invoice_header_number',[$this,'afterInvoicePdfInfo'],10,2);
-            // Filtros PDF adicionales (compatibilidad distintas versiones Perfex)
-            $invoicePdfFilters = [
-                'invoice_pdf_after_invoice_number',
-                'invoice_pdf_after_invoice_heading',
-                'invoice_pdf_after_invoice_content',
-                'invoice_pdf_after_invoice_info',
-                'invoice_pdf_after_invoice_date',
-                'invoice_pdf_after_invoice_client_details'
-            ];
-            foreach($invoicePdfFilters as $ipf){ hooks()->add_filter($ipf,[$this,'afterInvoicePdfInfo'],10,2); }
-            // Hooks PDF para notas de crédito (intentamos varias variantes posibles)
-            $creditPdfFilters = [
-                // Filtros conocidos / supuestos
-                'credit_note_pdf_after_credit_note_number',
-                'credit_note_pdf_after_credit_note_heading',
-                'credit_note_pdf_after_credit_note_content',
-                // Filtros adicionales posibles según versiones
-                'credit_note_pdf_after_credit_note_info',
-                'credit_note_pdf_after_credit_note_date',
-                'credit_note_pdf_after_credit_note_client_details'
-            ];
-            foreach($creditPdfFilters as $cpf){ hooks()->add_filter($cpf,[$this,'afterCreditNotePdfInfo'],10,2); }
-            // Hook antes de enviar nota de crédito por email (esperar QR)
-            hooks()->add_action('credit_note_object_before_send_to_client',[$this,'beforeCreditNoteSentClient']);
+
+            // Posición del QR en la factura en PDF
+            hooks()->add_filter('invoice_pdf_header_after_custom_fields',[$this,'afterInvoicePdfInfo'],10,2);
+
+            // Posición del QR en la nota de crédito en PDF
+            hooks()->add_filter('invoice_pdf_footer_after_custom_fields',[$this,'afterCreditNotePdfInfo'],10,2);
+
         }
 
         // hooks()->add_filter('pdf_logo_url',[$this,'addQrCodeImage']);
@@ -175,9 +184,11 @@ class VerifactiHooks
         }
         $invoice = $this->ci->invoices_model->get($invoice_id);
         if(!$invoice){ return ['success'=>false,'message'=>'Factura no encontrada']; }
+        $formatted_cancel = function_exists('format_invoice_number') ? format_invoice_number($invoice->id) : ($invoice->prefix.$invoice->number);
+        list($serie_canc,$numero_canc) = $this->parseFormattedSerieNumero($formatted_cancel,$invoice->prefix,$invoice->number);
         $payload = [
-            'serie' => $invoice->prefix,
-            'numero' => $invoice->number,
+            'serie' => $serie_canc,
+            'numero' => $numero_canc,
             'fecha_expedicion' => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
             // Campos de control según nueva especificación
             'rechazo_previo' => 'N',
@@ -242,14 +253,57 @@ class VerifactiHooks
         }
     }
     public function afterInvoicePdfInfo($invoice_info, $invoice){
+        // No mostrar QR si la fecha de la factura es anterior a la fecha de inicio configurada
+        $fecha_inicio = get_option('verifacti_start_date');
+        $fecha_factura = !empty($invoice->date) ? date('Y-m-d', strtotime($invoice->date)) : date('Y-m-d', strtotime($invoice->datecreated));
+        if($fecha_inicio && $fecha_factura < $fecha_inicio){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] QR oculto: fecha factura '.$fecha_factura.' < inicio '.$fecha_inicio.' (PDF)'); }
+            return $invoice_info;
+        }
         $invoice_id = $invoice->id;
+        // Retardo explícito de la generación del PDF si se solicita (caso Save & Send)
+        if(defined('VERIFACTI_FORCE_PDF_DELAY_SECONDS') && VERIFACTI_FORCE_PDF_DELAY_SECONDS > 0){
+            static $verifacti_pdf_global_delay_done = [];
+            if(empty($verifacti_pdf_global_delay_done[$invoice_id])){
+                $verifacti_pdf_global_delay_done[$invoice_id] = true;
+                $delayPdf = (int)VERIFACTI_FORCE_PDF_DELAY_SECONDS;
+                if(function_exists('log_message')){ log_message('debug','[Verifacti] PDF delay inicial de '.$delayPdf.'s invoice_id='.$invoice_id); }
+                sleep($delayPdf);
+            }
+        }
         $verifacti_invoice = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice_id ],['column'=>'id','order'=>'DESC']);
+        // Fallback crítico: si aún no existe registro (ej. Save & Send genera PDF antes del hook before_send) lo forzamos ahora
+        if(!$verifacti_invoice){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoicePdfInfo: sin fila previa, se fuerza sendInvoiceVerifacti ID='.$invoice_id); }
+            $this->sendInvoiceVerifacti($invoice_id,'pdf_hook_auto',false);
+            // Breve pausa opcional tras creación para permitir respuesta de API (configurable)
+            $microDelay = defined('VERIFACTI_PDF_FORCE_SEND_MICRO_DELAY') ? (float)VERIFACTI_PDF_FORCE_SEND_MICRO_DELAY : 0.8; // segundos
+            if($microDelay > 0){ usleep((int)($microDelay*1000000)); }
+            $verifacti_invoice = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice_id ],['column'=>'id','order'=>'DESC']);
+        }
         if($verifacti_invoice){
+            // Espera específica para escenarios donde el pre-hook no ejecutó (save & send / cron auto)
+            if(empty($verifacti_invoice->qr_image_base64) && !empty($verifacti_invoice->verifacti_id)){
+                static $verifacti_pdf_wait_done = false;
+                if(!$verifacti_pdf_wait_done){
+                    $verifacti_pdf_wait_done = true;
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoicePdfInfo: inicio espera QR inline ID='.$invoice_id); }
+                    // Reutiliza waitForQr pero con ventana configurable (aumentamos defecto para escenarios lentos)
+                    $maxPdfWait = defined('VERIFACTI_PDF_QR_WAIT_SECONDS') ? VERIFACTI_PDF_QR_WAIT_SECONDS : 12; // segundos
+                    // Intervalo de polling corto (por defecto 0.6s). Antes estaba a 6s lo que ocasionaba un único intento.
+                    $intervalPdf = defined('VERIFACTI_PDF_QR_WAIT_INTERVAL') ? VERIFACTI_PDF_QR_WAIT_INTERVAL : 0.6; // segundos
+                    $this->waitForQr($invoice, $maxPdfWait, $intervalPdf);
+                    // Refrescar fila tras espera
+                    $verifacti_invoice = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'invoice_id'=>$invoice_id ],['column'=>'id','order'=>'DESC']);
+                }
+            }
             if(empty($verifacti_invoice->qr_image_base64) && !empty($verifacti_invoice->verifacti_id)){
                 try{
+                    $formatted_pdf = function_exists('format_invoice_number') ? format_invoice_number($invoice->id) : ($invoice->prefix.$invoice->number);
+                    list($serie_pdf,$numero_pdf) = $this->parseFormattedSerieNumero($formatted_pdf,$invoice->prefix,$invoice->number);
                     $payloadStatus = [
-                        'serie' => $invoice->prefix,
-                        'numero' => $invoice->number,
+                        'serie' => $serie_pdf,
+                        'numero' => $numero_pdf,
                         'fecha_expedicion' => !empty($invoice->date)?date('d-m-Y',strtotime($invoice->date)):date('d-m-Y',strtotime($invoice->datecreated)),
                         'fecha_operacion' => !empty($invoice->date)?date('d-m-Y',strtotime($invoice->date)):date('d-m-Y',strtotime($invoice->datecreated))
                     ];
@@ -268,19 +322,8 @@ class VerifactiHooks
             static $verifacti_qr_injected = false;
             if(!$verifacti_qr_injected && !empty($verifacti_invoice->qr_image_base64)){
                 $qrBlock = generateVerifactiQr($verifacti_invoice);
-                $htmlWrapped = '<div class="verifacti-qr-after-status" style="margin-top:6px;">'.$qrBlock.'</div>';
                 $inserted = false;
-                if(is_string($invoice_info)){
-                    if(preg_match('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>\s*(?:POR\s+PAGAR|PAGADA|NO\s+PAGADA)[^<]*<\/span>)/i',$invoice_info,$m)){
-                        $invoice_info = preg_replace('/(<span[^>]*class=\"[^\"]*label[^\"]*\"[^>]*>\s*(?:POR\s+PAGAR|PAGADA|NO\s+PAGADA)[^<]*<\/span>)/i','$1'.$htmlWrapped,$invoice_info,1);
-                        $inserted = true;
-                    }
-                    if(!$inserted && preg_match('/(POR\s+PAGAR|PAGADA|NO\s+PAGADA)/i',$invoice_info)){
-                        $invoice_info = preg_replace('/(POR\s+PAGAR|PAGADA|NO\s+PAGADA)/i','$1'.$htmlWrapped,$invoice_info,1);
-                        $inserted = true;
-                    }
-                }
-                if(!$inserted){ $invoice_info .= $htmlWrapped; }
+                if(!$inserted){ $invoice_info .= $qrBlock; }
                 $verifacti_qr_injected = true;
             }
         }
@@ -289,6 +332,13 @@ class VerifactiHooks
     public function afterCreditNotePdfInfo($credit_note_info, $credit_note){
         $id = isset($credit_note->id)?$credit_note->id:null;
         if(!$id){ return $credit_note_info; }
+        // No mostrar QR si la fecha de la nota es anterior a la fecha de inicio configurada
+        $fecha_inicio = get_option('verifacti_start_date');
+        $fecha_nota = !empty($credit_note->date) ? date('Y-m-d', strtotime($credit_note->date)) : date('Y-m-d');
+        if($fecha_inicio && $fecha_nota < $fecha_inicio){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] QR oculto: fecha nota '.$fecha_nota.' < inicio '.$fecha_inicio.' (PDF CN)'); }
+            return $credit_note_info;
+        }
         if(function_exists('log_message')){ log_message('debug','[Verifacti] afterCreditNotePdfInfo hook ejecutado para CN ID='.$id); }
         $row = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'credit_note_id'=>$id ],['column'=>'id','order'=>'DESC']);
         if(!$row){ if(function_exists('log_message')){ log_message('debug','[Verifacti] afterCreditNotePdfInfo sin fila verifacti credit_note_id='.$id); } return $credit_note_info; }
@@ -338,6 +388,12 @@ class VerifactiHooks
                 $this->waitForQr($invoice, defined('VERIFACTI_QR_WAIT_SECONDS') ? VERIFACTI_QR_WAIT_SECONDS : 18, 0.8);
             }
         }
+        // Pausa explícita para asegurar que el QR (si acaba de llegar) pueda ser leído por los filtros PDF antes de generar el documento
+        $delay = defined('VERIFACTI_EMAIL_SEND_DELAY_SECONDS') ? (int)VERIFACTI_EMAIL_SEND_DELAY_SECONDS : 15;
+        if($delay > 0){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] beforeInvoiceSentClient: sleep de '.$delay.'s antes de generar email ID='.$invoice->id); }
+            sleep($delay);
+        }
         return $invoice;
     }
 
@@ -359,12 +415,27 @@ class VerifactiHooks
                 if(function_exists('log_message')){ log_message('debug','[Verifacti] waitForQr QR disponible tras '.round(microtime(true)-$start,2).'s intento='.$attempt); }
                 return true;
             }
-            // Si hay verifacti_id pero no QR, intentar status remoto
+            // Si hay verifacti_id pero no QR, intentar primero record_status por UUID de registro si lo tenemos
             if($row && !empty($row->verifacti_id)){
                 try{
+                    if(!empty($row->estado_api_uuid)){
+                        $rec = $this->ci->verifacti_lib->record_status($row->estado_api_uuid);
+                        if(isset($rec['success']) && $rec['success'] && isset($rec['result']['qr']) && isset($rec['result']['url'])){
+                            $this->ci->verifacti_model->save('invoices',[
+                                'qr_url' => $rec['result']['url'],
+                                'qr_image_base64' => $rec['result']['qr'],
+                                'status' => $rec['result']['estado'] ?? ($row->status?:'desconocido'),
+                                'updated_at' => date('Y-m-d H:i:s')
+                            ],['id'=>$row->id]);
+                            if(function_exists('log_message')){ log_message('debug','[Verifacti] waitForQr QR via record_status intento='.$attempt); }
+                            return true;
+                        }
+                    }
+                    $formatted_wait = function_exists('format_invoice_number') ? format_invoice_number($invoice->id) : ($invoice->prefix.$invoice->number);
+                    list($serie_w,$numero_w) = $this->parseFormattedSerieNumero($formatted_wait,$invoice->prefix,$invoice->number);
                     $payloadStatus = [
-                        'serie' => $invoice->prefix,
-                        'numero' => $invoice->number,
+                        'serie' => $serie_w,
+                        'numero' => $numero_w,
                         'fecha_expedicion' => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated)),
                         'fecha_operacion' => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated))
                     ];
@@ -403,9 +474,11 @@ class VerifactiHooks
             }
             if($row && !empty($row->verifacti_id)){
                 try{
+                    $formatted_cw = function_exists('format_credit_note_number') ? format_credit_note_number($credit->id) : ($credit->prefix.$credit->number);
+                    list($serie_cw,$numero_cw) = $this->parseFormattedSerieNumero($formatted_cw,$credit->prefix,$credit->number);
                     $payloadStatus = [
-                        'serie' => $credit->prefix,
-                        'numero' => $credit->number,
+                        'serie' => $serie_cw,
+                        'numero' => $numero_cw,
                         'fecha_expedicion' => !empty($credit->date) ? date('d-m-Y', strtotime($credit->date)) : date('d-m-Y')
                     ];
                     $resp = $this->ci->verifacti_lib->invoice_status($payloadStatus);
@@ -430,22 +503,23 @@ class VerifactiHooks
         if(function_exists('log_message')){ log_message('debug','[Verifacti] waitForQrCredit agotado sin QR ID='.$credit_id); }
         return false;
     }
-    public function addQrCodeImage($pdf_url){
-        $segments = $this->ci->uri->segment_array();
-        $qr_image = 'QR CODE HERE';
-        $qr_image .= json_encode($segments);
-
-        return $pdf_url."<br/>".$qr_image;
-    }
+    
     public function afterInvoiceLeftHtml($invoice){
         $invoice_id = $invoice->id;
-    $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id],
+        $fecha_inicio = get_option('verifacti_start_date');
+        $fecha_factura = !empty($invoice->date) ? date('Y-m-d', strtotime($invoice->date)) : date('Y-m-d', strtotime($invoice->datecreated));
+        if($fecha_inicio && $fecha_factura < $fecha_inicio){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] QR oculto: fecha factura '.$fecha_factura.' < inicio '.$fecha_inicio.' (web)'); }
+            return;
+        }
+        $verifacti_invoice = $this->ci->verifacti_model->get("invoices",['single'=>true,'invoice_id'=>$invoice_id],
             ['column'=>'id','order'=>'DESC']);
         if($verifacti_invoice){
             echo generateVerifactiQr($verifacti_invoice);
         }
-
     }
+
+    // Crear aquí public function afterCreditNoteLeftHtml($credit_note)
 
     // Métodos legacy (desactivados) mantenidos por compatibilidad futura
     public function afterInvoiceCreated($invoice_id){ /* envío automático deshabilitado */ }
@@ -454,16 +528,20 @@ class VerifactiHooks
         if(empty($updateData['id'])){ return; }
         if(function_exists('isVerifactiEnable') && !isVerifactiEnable()){ return; }
         if(isset($updateData['sent']) && (int)$updateData['sent'] === 1){
-            // Confirmar que no es draft
             $invoice = $this->ci->invoices_model->get($updateData['id']);
             if($invoice && isset($invoice->status)){
                 $st = $invoice->status;
                 if($st === 'draft' || $st === 'Draft' || (is_numeric($st) && (int)$st === 6)){
+                    return; // nunca enviar borradores
+                }
+                // Respeto de start_date: si la fecha es anterior no enviamos
+                if(isset($invoice->date) && function_exists('verifacti_is_before_start') && verifacti_is_before_start($invoice->date)){
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoiceUpdated: cancelado por start_date ('.$invoice->date.') ID='.$invoice->id); }
                     return;
                 }
             }
             if(function_exists('log_message')){ log_message('debug','[Verifacti] afterInvoiceUpdated detectó sent=1 para factura ID '.$updateData['id']); }
-            $this->sendInvoiceVerifacti($updateData['id'],'afterInvoiceUpdated');
+            $this->sendInvoiceVerifacti($updateData['id'],'after_invoice_updated');
         }
     }
     protected function sendInvoiceVerifacti($invoice_id,$source=null,$force=false){
@@ -473,9 +551,9 @@ class VerifactiHooks
         $this->ensureInvoiceSchema();
         $invoice = $this->ci->invoices_model->get($invoice_id);
         if(!$invoice){ if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: factura no encontrada ID='.$invoice_id.' source='.$source); } return; }
-        // Filtro: no enviar si fecha expedición anterior a fecha de entrada en funcionamiento
-        if(isset($invoice->date) && verifacti_is_before_start($invoice->date)){
-            if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: saltando por start_date ('.$invoice->date.') ID='.$invoice_id); }
+        // Bloqueo por fecha de inicio del módulo: no enviar facturas anteriores
+        if(isset($invoice->date) && function_exists('verifacti_is_before_start') && verifacti_is_before_start($invoice->date)){
+            if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: cancelado por start_date ('.$invoice->date.') ID='.$invoice_id.' source='.$source); }
             return;
         }
     // (Fix #6) Eliminado filtro que bloqueaba facturas con fecha anterior. Permitimos envío atrasado.
@@ -500,29 +578,33 @@ class VerifactiHooks
         if($existing && ($existing->verifacti_id || $existing->status === 'Registrado')){
             if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: ya enviado/verificado ID='.$invoice_id.' source='.$source); } return; // ya enviado
         }
-        // Pre-chequeo remoto: consultar si ya existe en AEAT a través de Verifacti (estado consolidado) antes de intentar crear
-        try{
-            $statePayload = [
-                'serie' => $invoice->prefix,
-                'numero' => $invoice->number,
-                'fecha_expedicion' => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated))
-            ];
-            $remoteState = $this->ci->verifacti_lib->get_invoice_state($statePayload);
-            if(isset($remoteState['success']) && $remoteState['success'] && !empty($remoteState['result'])){
-                // Registrar localmente si no existía
-                if(!$existing){
-                    $this->ci->verifacti_model->save('invoices',[
-                        'invoice_id' => $invoice_id,
-                        'verifacti_id' => $remoteState['result']['uuid'] ?? null,
-                        'status' => $remoteState['result']['estado'] ?? 'Registrado',
-                        'created_at' => date('Y-m-d H:i:s'),
-                        'updated_at' => date('Y-m-d H:i:s')
-                    ]);
+        // Pre-chequeo remoto opcional: consultar /status para detectar duplicado antes de crear.
+        // Desactivado por defecto para evitar 404 de facturas aún no registradas.
+        if(defined('VERIFACTI_ENABLE_PRECHECK') && VERIFACTI_ENABLE_PRECHECK){
+            try{
+                $formatted_initial = function_exists('format_invoice_number') ? format_invoice_number($invoice->id) : ($invoice->prefix.$invoice->number);
+                list($serie_check,$numero_check) = $this->parseFormattedSerieNumero($formatted_initial,$invoice->prefix,$invoice->number);
+                $statePayload = [
+                    'serie' => $serie_check,
+                    'numero' => $numero_check,
+                    'fecha_expedicion' => !empty($invoice->date) ? date('d-m-Y', strtotime($invoice->date)) : date('d-m-Y',strtotime($invoice->datecreated))
+                ];
+                $remoteState = $this->ci->verifacti_lib->get_invoice_state($statePayload);
+                if(isset($remoteState['success']) && $remoteState['success'] && !empty($remoteState['result'])){
+                    if(!$existing){
+                        $this->ci->verifacti_model->save('invoices',[
+                            'invoice_id' => $invoice_id,
+                            'verifacti_id' => $remoteState['result']['uuid'] ?? null,
+                            'status' => $remoteState['result']['estado'] ?? 'Registrado',
+                            'created_at' => date('Y-m-d H:i:s'),
+                            'updated_at' => date('Y-m-d H:i:s')
+                        ]);
+                    }
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: detectada ya registrada (pre-check) ID='.$invoice_id); }
+                    return;
                 }
-                if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: detectada ya registrada en remoto ID='.$invoice_id); }
-                return;
-            }
-        }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] pre-check remoto falló ID='.$invoice_id.' msg='.$e->getMessage()); } }
+            }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] pre-check remoto (opcional) falló ID='.$invoice_id.' msg='.$e->getMessage()); } }
+        }
         if(function_exists('log_message')){ log_message('debug','[Verifacti] sendInvoiceVerifacti: preparando envío ID='.$invoice_id.' source='.$source); }
         $client = $invoice->client;
         $invoice_items = isset($invoice->items) ? $invoice->items : [];
@@ -617,23 +699,8 @@ class VerifactiHooks
         if($is_eu && ($tipo_factura_calc === 'F2' || $tipo_factura_calc === 'R5')){
             $tipo_factura_calc = 'F1';
         }
-        $raw_formatted = format_invoice_number($invoice->id);
-        $serie_final = $invoice->prefix;
-        $numero_final = $invoice->number;
-        // Si hay barra, la serie incluye la barra final
-        if(strpos($raw_formatted, '/') !== false){
-            $pos = strpos($raw_formatted, '/');
-            $serie_final = substr($raw_formatted, 0, $pos+1);
-            $numero_final = substr($raw_formatted, $pos+1);
-            $numero_final = ltrim($numero_final, '0');
-        }else{
-            // Si no hay barra, usar prefijo y número como fallback
-            if(preg_match('/^([^\d]*)(.+)$/', $raw_formatted, $m)){
-                $serie_final = $m[1];
-                $numero_final = $m[2];
-            }
-        }
-        if($numero_final === ''){ $numero_final = $invoice->number; }
+    $raw_formatted = function_exists('format_invoice_number') ? format_invoice_number($invoice->id) : ($invoice->prefix.$invoice->number);
+    list($serie_final,$numero_final) = $this->parseFormattedSerieNumero($raw_formatted,$invoice->prefix,$invoice->number);
         $invoice_data = [
             "serie" => $serie_final,
             "numero" => $numero_final,
@@ -924,6 +991,7 @@ class VerifactiHooks
         if($response['success'] && isset($result['qr']) && isset($result['url'])){
             $this->ci->verifacti_model->save('invoices',[
                 'verifacti_id' => $result['uuid'],
+                'estado_api_uuid' => $result['uuid'] ?? null,
                 'status' => $result['estado'],
                 'qr_url' => $result['url'],
                 'qr_image_base64' => $result['qr'],
@@ -1002,6 +1070,7 @@ class VerifactiHooks
                             `last_fiscal_hash` VARCHAR(64) DEFAULT NULL,
                             `mod_count` INT UNSIGNED NOT NULL DEFAULT 0,
                             `estado_api` VARCHAR(32) DEFAULT NULL,
+                            `estado_api_uuid` VARCHAR(64) DEFAULT NULL,
                             `error_code` VARCHAR(32) DEFAULT NULL,
                             `error_message` TEXT DEFAULT NULL,
                             `last_status_checked_at` DATETIME DEFAULT NULL,
@@ -1033,6 +1102,9 @@ class VerifactiHooks
         }
     if(!$this->columnExists('verifacti_invoices','estado_api')){
             $this->ci->db->query("ALTER TABLE `{$table}` ADD `estado_api` VARCHAR(32) DEFAULT NULL AFTER `mod_count`");
+        }
+    if(!$this->columnExists('verifacti_invoices','estado_api_uuid')){
+            $this->ci->db->query("ALTER TABLE `{$table}` ADD `estado_api_uuid` VARCHAR(64) DEFAULT NULL AFTER `estado_api`");
         }
     if(!$this->columnExists('verifacti_invoices','error_code')){
             $this->ci->db->query("ALTER TABLE `{$table}` ADD `error_code` VARCHAR(32) DEFAULT NULL AFTER `estado_api`");
@@ -1068,9 +1140,10 @@ class VerifactiHooks
         if(!function_exists('get_credit_note_item_taxes')){ $this->ci->load->helper('credit_notes'); }
         $credit = $this->ci->credit_notes_model->get($credit_note_id);
     if(!$credit){ if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: credit note no encontrada ID='.$credit_note_id); } return; }
-    if(isset($credit->date) && verifacti_is_before_start($credit->date)){
-        if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: saltando por start_date ('.$credit->date.') ID='.$credit_note_id); }
-        return;
+    // Respetar fecha de inicio del módulo: NO enviar notas anteriores a start_date
+    if(isset($credit->date) && function_exists('verifacti_is_before_start') && verifacti_is_before_start($credit->date)){
+        if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: cancelado por start_date ('.$credit->date.') ID='.$credit_note_id); }
+        return; // no se envía
     }
     if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: preparando envío CN ID='.$credit_note_id); }
     $this->ensureInvoiceSchema();
@@ -1140,36 +1213,46 @@ class VerifactiHooks
                 if(!isset($this->ci->invoices_model)){$this->ci->load->model('invoices_model');}
                 $orig = $this->ci->invoices_model->get($credit->invoice_id);
                 if($orig){
+                    $formatted_orig = function_exists('format_invoice_number') ? format_invoice_number($orig->id) : ($orig->prefix.$orig->number);
+                    list($serie_o,$numero_o) = $this->parseFormattedSerieNumero($formatted_orig,$orig->prefix,$orig->number);
                     $invoice_data['facturas_rectificadas'] = [[
-                        'serie' => $orig->prefix,
-                        'numero' => $orig->number,
+                        'serie' => $serie_o,
+                        'numero' => $numero_o,
                         'fecha_expedicion' => !empty($orig->date) ? date('d-m-Y', strtotime($orig->date)) : date('d-m-Y',strtotime($orig->datecreated))
                     ]];
                 }
             }
         }
-        // Pre-chequeo remoto para evitar duplicados si ya fue registrada manualmente
+        // Pre-chequeo remoto (evitar duplicado sólo si estado registrado/aceptado con UUID)
         try{
+            $formatted_cn_pre = function_exists('format_credit_note_number') ? format_credit_note_number($credit->id) : ($credit->prefix.$credit->number);
+            list($serie_cpre,$numero_cpre) = $this->parseFormattedSerieNumero($formatted_cn_pre,$credit->prefix,$credit->number);
             $statePayload = [
-                'serie' => $credit->prefix,
-                'numero' => $credit->number,
+                'serie' => $serie_cpre,
+                'numero' => $numero_cpre,
                 'fecha_expedicion' => !empty($credit->date) ? date('d-m-Y', strtotime($credit->date)) : date('d-m-Y')
             ];
             $remoteState = $this->ci->verifacti_lib->get_invoice_state($statePayload);
             if(isset($remoteState['success']) && $remoteState['success'] && !empty($remoteState['result'])){
-                $existsRemote = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'credit_note_id'=>$credit->id ]);
-                if(!$existsRemote){
-                    $this->ci->verifacti_model->save('invoices',[
-                        'invoice_id' => !empty($credit->invoice_id)?$credit->invoice_id:0,
-                        'credit_note_id' => $credit->id,
-                        'verifacti_id' => $remoteState['result']['uuid'] ?? null,
-                        'status' => $remoteState['result']['estado'] ?? 'Registrado',
-                        'created_at' => date('Y-m-d H:i:s'),
-                        'updated_at' => date('Y-m-d H:i:s')
-                    ]);
+                $r = $remoteState['result'];
+                $estadoRem = $r['estado'] ?? null; $uuidRem = $r['uuid'] ?? null;
+                if($uuidRem && in_array($estadoRem,['Registrado','Aceptado','Consolidado'])){
+                    $existsRemote = $this->ci->verifacti_model->get('invoices',[ 'single'=>true,'credit_note_id'=>$credit->id ]);
+                    if(!$existsRemote){
+                        $this->ci->verifacti_model->save('invoices',[
+                            'invoice_id' => !empty($credit->invoice_id)?$credit->invoice_id:0,
+                            'credit_note_id' => $credit->id,
+                            'verifacti_id' => $uuidRem,
+                            'status' => $estadoRem,
+                            'created_at' => date('Y-m-d H:i:s'),
+                            'updated_at' => date('Y-m-d H:i:s')
+                        ]);
+                    }
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: CN pre-check detecta ya registrada (estado='.$estadoRem.') ID='.$credit_note_id); }
+                    return;
+                }else{
+                    if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: pre-check no concluye registro (estado='.( $estadoRem?:'null' ).', uuid='.( $uuidRem?:'null' ).') ID='.$credit_note_id); }
                 }
-                if(function_exists('log_message')){ log_message('debug','[Verifacti] sendCreditNoteVerifacti: CN ya registrada remoto ID='.$credit_note_id); }
-                return;
             }
         }catch(\Exception $e){ if(function_exists('log_message')){ log_message('debug','[Verifacti] pre-check remoto CN falló ID='.$credit_note_id.' msg='.$e->getMessage()); } }
         // Construcción de líneas (similar a facturas)
@@ -1196,7 +1279,7 @@ class VerifactiHooks
                 }
             }
             $item_base_after_discount = max(0,$item_base_raw - $item_discount);
-            $item_taxes = function_exists('get_credit_note_item_taxes') ? get_credit_note_item_taxes($item['id']) : [];
+            $item_taxes = function_exists('get_credit_note_item_taxes') ? get_credit_note_item_taxes($item['id']) : (function_exists('get_invoice_item_taxes') ? get_invoice_item_taxes($item['id']) : []);
             if(empty($item_taxes)){
                 $tax_key = '0.00-E1';
                 if(!isset($aggregated[$tax_key])){ $aggregated[$tax_key] = ['base'=>0.0,'rate'=>0.0,'exenta'=>'E1']; }
@@ -1445,11 +1528,14 @@ class VerifactiHooks
         if(!$this->ci->db->table_exists(db_prefix().'invoices')){ return; }
         $db = $this->ci->db;
         // Seleccionar últimas 50 para limitar carga
-        $db->select('id,number,prefix,status,sent');
+        $db->select('id,number,prefix,status,sent,date');
         $db->from(db_prefix().'invoices');
         $db->where('sent',1); // Perfex marcará sent=1 tras envío cron
-        // Filtro: sólo facturas con fecha de hoy o futura
-    // (Fix #6) Eliminado filtro de fecha >= hoy: permitimos envíos atrasados.
+        // Filtro por start_date (no enviar anteriores)
+        if(function_exists('get_option')){
+            $start = get_option('verifacti_start_date');
+            if($start){ $db->where('date >=',$start); }
+        }
         $db->order_by('id','DESC');
         $db->limit(50);
         $query = $db->get();
@@ -1481,16 +1567,21 @@ class VerifactiHooks
                 // Si todavía no existe la tabla (instalación recién activada) abortar silenciosamente
                 if(!$hasVerifactiTable){ return; }
         // Seleccionar últimas 30 facturas sent=1 sin registro verifacti satisfactorio
-            $sql = "SELECT i.id,i.status,i.sent FROM ".db_prefix()."invoices i
+            $startClause = '';
+            if(function_exists('get_option')){ $start = get_option('verifacti_start_date'); if($start){ $startClause = " AND (i.date IS NULL OR i.date >= '".$start."')"; } }
+            $sql = "SELECT i.id,i.status,i.sent,i.date FROM ".db_prefix()."invoices i
                 LEFT JOIN `$verifactiTable` v ON v.invoice_id = i.id
-                                WHERE i.sent=1
-                                    AND (v.id IS NULL OR (v.verifacti_id IS NULL OR v.verifacti_id=''))
+                                WHERE i.sent=1".$startClause."\n                                    AND (v.id IS NULL OR (v.verifacti_id IS NULL OR v.verifacti_id=''))
                                 ORDER BY i.id DESC LIMIT 30";
         $res = $db->query($sql)->result();
         if(!$res){ return; }
         foreach($res as $row){
             // Saltar drafts
             if(isset($row->status) && ( (is_numeric($row->status) && (int)$row->status === 6) || strtolower((string)$row->status)==='draft')){ continue; }
+            if(function_exists('verifacti_is_before_start') && isset($row->date) && verifacti_is_before_start($row->date)){
+                if(function_exists('log_message')){ log_message('debug','[Verifacti] processMarkedAsSentFallback: skip por start_date ID='.$row->id); }
+                continue;
+            }
             if(function_exists('log_message')){ log_message('debug','[Verifacti] processMarkedAsSentFallback: enviando ID='.$row->id); }
             $this->sendInvoiceVerifacti($row->id,'admin_init_fallback');
         }
@@ -1505,13 +1596,18 @@ class VerifactiHooks
         $db = $this->ci->db;
         if(!$db->table_exists(db_prefix().'creditnotes')){ return; }
         $this->ensureInvoiceSchema();
-    $sql = "SELECT cn.id, cn.number, cn.prefix FROM ".db_prefix()."creditnotes cn
+    $startClause = '';
+    if(function_exists('get_option')){ $start = get_option('verifacti_start_date'); if($start){ $startClause = " AND (cn.date IS NULL OR cn.date >= '".$start."')"; } }
+    $sql = "SELECT cn.id, cn.number, cn.prefix, cn.date FROM ".db_prefix()."creditnotes cn
         LEFT JOIN ".db_prefix()."verifacti_invoices v ON v.credit_note_id = cn.id
-        WHERE (v.id IS NULL OR (v.verifacti_id IS NULL OR v.verifacti_id=''))
-        ORDER BY cn.id DESC LIMIT 30";
+        WHERE (v.id IS NULL OR (v.verifacti_id IS NULL OR v.verifacti_id=''))".$startClause."\n        ORDER BY cn.id DESC LIMIT 30";
         $rows = $db->query($sql)->result();
         if(!$rows){ return; }
         foreach($rows as $r){
+            if(function_exists('verifacti_is_before_start') && isset($r->date) && verifacti_is_before_start($r->date)){
+                if(function_exists('log_message')){ log_message('debug','[Verifacti] processPendingCreditNotes: skip por start_date CN ID='.$r->id); }
+                continue;
+            }
             if(function_exists('log_message')){ log_message('debug','[Verifacti] processPendingCreditNotes: enviando CN ID='.$r->id); }
         $this->sendCreditNoteVerifacti($r->id, null);
         }

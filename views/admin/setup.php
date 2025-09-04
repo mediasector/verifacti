@@ -31,7 +31,11 @@
 							</div>
 							<div class="form-group">
 								<label for="verifacti_start_date">Entrada en funcionamiento</label>
-								<input type="date" class="form-control" name="verifacti[start_date]" id="verifacti_start_date" value="<?= isset($form['start_date']) ? html_escape($form['start_date']) : '' ?>" placeholder="YYYY-MM-DD">
+								<?php
+								$hoy = date('Y-m-d');
+								$valor_fecha = isset($form['start_date']) && $form['start_date'] ? html_escape($form['start_date']) : $hoy;
+								?>
+								<input type="date" class="form-control" name="verifacti[start_date]" id="verifacti_start_date" value="<?= $valor_fecha ?>" placeholder="YYYY-MM-DD">
 								<p class="help-block small">Facturas y notas de crédito con fecha de expedición anterior NO se informarán a Verifacti.</p>
 							</div>
 							

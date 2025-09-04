@@ -97,9 +97,12 @@ if(!function_exists('generateVerifactiQr')){
 		$base64_str = $item->qr_image_base64;
 		if(!empty($base64_str)){
 			return <<<HTML
-			<div>
-				<img src="data:image/jpeg;base64,{$base64_str}" height="100" width="100" />
+			
+			<div class="col-12 col-offset-6 invoice-html-note" style="margin-left:15px;margin-right:0px!important;">
+				<img src="data:image/jpeg;base64,{$base64_str}" height="80" width="80" style="margin-left:5px; margin-right:-5px;" />
+				<p style="font-size:8pt!important;color:#909090;margin-left:15px;">Esta factura ha sido remitida telemáticamente a la Agencia Tributaria mediante el sistema Verifactu y es verificable mediante el código QR.</p>
 			</div>
+			
 			HTML;
 		}
 		return '';

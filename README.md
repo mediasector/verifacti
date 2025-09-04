@@ -1,12 +1,6 @@
-# Integración de Verifactu para Perfex CRM a través de la API de Verifacti
+# Verifacti Integration Module for Perfex CRM
 
-Módulo para la integración básica de Verifactu en Perfex CRM utilizando la API de Verifacti, ideado para cumplir con los requisitos de la Ley Antifraude a partir de enero de 2026. Este módulo, que hemos desarrollado con la ayuda de un programador externo (y muchas horas de búsquedas, arreglos y ayuda de Copilot) nos permite iniciar el camino para cumplir con Verifactu, si bien aún hay que utilizarlo con precaución y necesita muchas mejoras para terminar de funcionar.
-
-Actualmente sólo soporta los tipos impositivos aplicables en Península, Baleares, Ceuta y Melilla. Falta por integrar IGIC.
-
-El módulo, además, realiza ciertos cambios de funcionamiento en la interfaz de Perfex CRM para cumplir con la legislación: elimina la función de fusionar facturas.
-
-Está pensado únicamente para uso interno de los sistemas de Media Sector S.L. y se libera por si alguien quiere construir un módulo más decente, con menos errores. Se debe usar bajo la propia responsabilidad.
+Integración avanzada con la API de Verifacti (facturación electrónica española) para Perfex CRM.
 
 ## Características principales
 - Envío controlado (no automático) de facturas al marcar como enviadas o al enviarlas por email (con forzado para borradores en "Guardar & Enviar" para obtener QR antes del PDF).
@@ -38,20 +32,6 @@ Está pensado únicamente para uso interno de los sistemas de Media Sector S.L. 
    define('VERIFACTI_QR_WAIT_SECONDS', 18);        // Tiempo máximo de espera para QR
    ```
 
-## Configuración de códigos de exención
-
-En el menú de Perfex CRM, ve a 'Configuración > Presupuestos > Impuestos' y haz clic en 'Nuevo impuesto'. A la hora de nombrar los impuestos, debes utilizar el tipo de exención entre paréntesis, corchetes o después de un espacio, siendo libre el nombre que le quieras poner.
-
-Detecta los tokens `E*` en el nombre del impuesto 0%.
-
-Nombres sugeridos:
-
-- `IVA 0% exento E2|0.00`
-- `Exportación (E5)|0.00`
-- `IVA 0% [E3]|0.00`
-
-Si no se encuentra token se asigna `E1` por defecto.
-
 ## Flujo de Envío
 1. El usuario marca la factura como enviada o pulsa "Enviar por Email".
 2. Si está en borrador y es un envío inmediato (no programado), se fuerza el registro para obtener el QR antes de generar el PDF.
@@ -82,6 +62,13 @@ Campos clave: `invoice_id`, `credit_note_id`, `verifacti_id`, `status`, `qr_url`
 - Validaciones: `pre_controller` (bloqueo >3000 sin NIF, bloqueo merge).
 - Cron: `after_cron_run` (procesos pendientes).
 
+## Códigos de Exención
+Detecta tokens `E*` en el nombre del impuesto 0%. Ejemplos aceptados:
+- `IVA 0% EXENTO E2|0.00`
+- `Servicio Exportación (E5)|0.00`
+- `IVA 0% [E3]|0.00`
+Si no se encuentra token se asigna `E1` por defecto.
+
 ## Cancelación
 `cancelInvoice($invoice_id, $reason)` realiza llamada a la API y actualiza estado local (`canceled_at`). Mantiene respuesta completa para auditoría.
 
@@ -97,8 +84,6 @@ Ver `CHANGELOG.md`.
 - UI para reintento manual de obtención de QR.
 - Configuración de tipo_rectificativa variable (I/S, etc.).
 - Validación explícita de máximo 12 líneas agregadas (normativa TicketBAI en algunas jurisdicciones / escenarios SII).
-- Eliminar las opciones de borrado de facturas en la interfaz.
-- Añadir opciones de IGIC.
 
 ## Desarrollo / Contribución
 Ver `CONTRIBUTING.md`.
@@ -110,4 +95,4 @@ Ver `SECURITY.md`.
 Distribuido bajo licencia MIT (ver `LICENSE`).
 
 ---
-© 2025 Media Sector, Asif Thebepotra y contribuidores. Este módulo no es oficial de Perfex CRM ni de Verifacti.
+© 2025 Media Sector y contribuidores. Este módulo no es oficial de Perfex CRM ni de Verifacti.
