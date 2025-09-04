@@ -2,6 +2,12 @@
 
 Todas las versiones notables de este módulo se documentarán en este archivo.
 
+## [0.3.1] - 2025-09-02
+Revisión menor, que restablece el envío a Verifacti de las notas de crédito.
+
+## [0.3] - 2025-09-02
+Cambios en el código, mejoras funcionales.
+
 ## [0.2] - 2025-08-29
 ### Añadido
 - Captura y persistencia de `http_status` en logs API.
